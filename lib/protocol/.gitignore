@@ -1,0 +1,4 @@
+.env
+out/*.json
+abi
+.DS_Store
