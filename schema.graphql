@@ -1,10 +1,17 @@
 type Split @entity {
   id: ID!
+  distributorFee: BigInt!
+  totalEthDistributed: BigInt!
+
+  # can't use derived relations inside mapping.ts
+  # members: [Member!]! @derivedFrom(field: "split")
+  members: [Member!]!
 }
 
 type Member @entity {
   id: ID!
-  split: String!
+  split: Split!
   recipient: String!
   allocation: BigInt!
+  totalEthDistributed: BigInt!
 }

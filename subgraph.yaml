@@ -21,6 +21,8 @@ dataSources:
       eventHandlers:
         - event: CreateSplit(indexed address)
           handler: handleCreateSplit
+        - event: DistributeETH(indexed address,uint256,indexed address)
+          handler: handleDistributeETH
       callHandlers:
         - function: createSplit(address[],uint32[],uint32,address)
           handler: handleCreateSplitCall
