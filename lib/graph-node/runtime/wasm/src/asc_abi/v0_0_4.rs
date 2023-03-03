@@ -1,3 +1,4 @@
+use graph::runtime::gas::GasCounter;
 use std::convert::TryInto as _;
 use std::marker::PhantomData;
 use std::mem::{size_of, size_of_val};
@@ -86,8 +87,8 @@ impl AscType for ArrayBuffer {
         let mut asc_layout: Vec<u8> = Vec::new();
 
         let byte_length: [u8; 4] = self.byte_length.to_le_bytes();
-        asc_layout.extend(&byte_length);
-        asc_layout.extend(&self.padding);
+        asc_layout.extend(byte_length);
+        asc_layout.extend(self.padding);
         asc_layout.extend(self.content.iter());
 
         // Allocate extra capacity to next power of two, as required by asc.
@@ -115,7 +116,7 @@ impl AscType for ArrayBuffer {
             DeterministicHostError::from(anyhow!("Attempted to read past end of array"))
         })?;
         Ok(ArrayBuffer {
-            byte_length: u32::from_asc_bytes(&byte_length, api_version)?,
+            byte_length: u32::from_asc_bytes(byte_length, api_version)?,
             padding: [0; 4],
             content: content.to_vec().into(),
         })
@@ -124,8 +125,9 @@ impl AscType for ArrayBuffer {
     fn asc_size<H: AscHeap + ?Sized>(
         ptr: AscPtr<Self>,
         heap: &H,
+        gas: &GasCounter,
     ) -> Result<u32, DeterministicHostError> {
-        let byte_length = ptr.read_u32(heap)?;
+        let byte_length = ptr.read_u32(heap, gas)?;
         let byte_length_size = size_of::<u32>() as u32;
         let padding_size = size_of::<u32>() as u32;
         Ok(byte_length_size + padding_size + byte_length)
@@ -150,6 +152,7 @@ impl<T: AscValue> TypedArray<T> {
     pub(crate) fn new<H: AscHeap + ?Sized>(
         content: &[T],
         heap: &mut H,
+        gas: &GasCounter,
     ) -> Result<Self, DeterministicHostError> {
         let buffer = class::ArrayBuffer::new(content, heap.api_version())?;
         let buffer_byte_length = if let class::ArrayBuffer::ApiVersion0_0_4(ref a) = buffer {
@@ -157,7 +160,7 @@ impl<T: AscValue> TypedArray<T> {
         } else {
             unreachable!("Only the correct ArrayBuffer will be constructed")
         };
-        let ptr = AscPtr::alloc_obj(buffer, heap)?;
+        let ptr = AscPtr::alloc_obj(buffer, heap, gas)?;
         Ok(TypedArray {
             byte_length: buffer_byte_length,
             buffer: AscPtr::new(ptr.wasm_ptr()),
@@ -169,8 +172,9 @@ impl<T: AscValue> TypedArray<T> {
     pub(crate) fn to_vec<H: AscHeap + ?Sized>(
         &self,
         heap: &H,
+        gas: &GasCounter,
     ) -> Result<Vec<T>, DeterministicHostError> {
-        self.buffer.read_ptr(heap)?.get(
+        self.buffer.read_ptr(heap, gas)?.get(
             self.byte_offset,
             self.byte_length / size_of::<T>() as u32,
             heap.api_version(),
@@ -208,7 +212,7 @@ impl AscType for AscString {
         let mut asc_layout: Vec<u8> = Vec::new();
 
         let length: [u8; 4] = self.length.to_le_bytes();
-        asc_layout.extend(&length);
+        asc_layout.extend(length);
 
         // Write the code points, in little-endian (LE) order.
         for &code_unit in self.content.iter() {
@@ -275,8 +279,9 @@ impl AscType for AscString {
     fn asc_size<H: AscHeap + ?Sized>(
         ptr: AscPtr<Self>,
         heap: &H,
+        gas: &GasCounter,
     ) -> Result<u32, DeterministicHostError> {
-        let length = ptr.read_u32(heap)?;
+        let length = ptr.read_u32(heap, gas)?;
         let length_size = size_of::<u32>() as u32;
         let code_point_size = size_of::<u16>() as u32;
         let data_size = code_point_size.checked_mul(length);
@@ -301,9 +306,10 @@ impl<T: AscValue> Array<T> {
     pub fn new<H: AscHeap + ?Sized>(
         content: &[T],
         heap: &mut H,
+        gas: &GasCounter,
     ) -> Result<Self, DeterministicHostError> {
         let arr_buffer = class::ArrayBuffer::new(content, heap.api_version())?;
-        let arr_buffer_ptr = AscPtr::alloc_obj(arr_buffer, heap)?;
+        let arr_buffer_ptr = AscPtr::alloc_obj(arr_buffer, heap, gas)?;
         Ok(Array {
             buffer: AscPtr::new(arr_buffer_ptr.wasm_ptr()),
             // If this cast would overflow, the above line has already panicked.
@@ -315,9 +321,10 @@ impl<T: AscValue> Array<T> {
     pub(crate) fn to_vec<H: AscHeap + ?Sized>(
         &self,
         heap: &H,
+        gas: &GasCounter,
     ) -> Result<Vec<T>, DeterministicHostError> {
         self.buffer
-            .read_ptr(heap)?
+            .read_ptr(heap, gas)?
             .get(0, self.length, heap.api_version())
     }
 }

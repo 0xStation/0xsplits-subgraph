@@ -1,23 +1,23 @@
 {
-  "name": "subgraph",
+  "name": "0xsplits",
   "license": "UNLICENSED",
   "scripts": {
-    "new": "git submodule update --init --recursive",
-    "lib": "git submodule update --recursive --remote && echo '✅  libraries updated'",
-    "abi": "rm -rf abis && yarn lib && cd lib/protocol && sh scripts/abi.sh && mv abi ../../abis && cd ../.. && echo '✅  ABIs updated'",
-    "gen": "graph codegen && echo '✅  typescript files build from schema'",
-    "build": "graph build && echo '✅  WASM files built from source'",
-    "run-ipfs": "ipfs daemon --init",
-    "run-postgres": "brew services start postgres && echo '✅  postgres started'",
-    "build-graph-node": "cd lib/graph-node && cargo build && cd ../.. && echo '✅  graph-node built and ready, run with: yarn run-graph-node'",
-    "run-graph-node": "cd lib/graph-node && source ../../.env && cargo run -p graph-node --release -- --postgres-url postgresql://$USERNAME:@localhost:5432/graph-node --ethereum-rpc rinkeby::https://eth-rinkeby.alchemyapi.io/v2/$ALCHEMY_API_KEY --ipfs 127.0.0.1:5001",
-    "create-local": "graph create --node http://localhost:8020/ 0xStation/Station && echo '✅  subgraph created'",
-    "deploy-local": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001/ 0xStation/Station && echo '✅  subgraph deployed'",
-    "auth": "graph auth --product hosted-service $ACCESS_TOKEN && echo '✅  account authenticated'",
-    "deploy-rinkeby": "graph deploy --product hosted-service 0xStation/Station && echo '✅  subgraph deployed to rinkeby'"
+    "gen": "graph codegen",
+    "build": "graph build",
+    "ipfs": "ipfs daemon --init",
+    "graph": "cd lib/graph-node && source ../../.env && cargo run -p graph-node --release -- --postgres-url postgresql://$USERNAME:@localhost:5432/graph-node --ethereum-rpc goerli::https://eth-goerli.alchemyapi.io/v2/$ALCHEMY_API_KEY --ipfs 127.0.0.1:5001",
+    "create": "graph create --node http://localhost:8020/ 0xstation/0xsplits",
+    "remove": "graph remove --node http://localhost:8020/ 0xstation/0xsplits",
+    "deploy": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 0xstation/0xsplits",
+    "auth": "graph auth --product hosted-service $ACCESS_TOKEN",
+    "deploy-hosted": "graph deploy --node https://api.thegraph.com/deploy/ 0xstation/0xsplits",
+    "test": "graph test"
   },
   "dependencies": {
-    "@graphprotocol/graph-cli": "0.25.1",
-    "@graphprotocol/graph-ts": "0.24.1"
+    "@graphprotocol/graph-cli": "0.42.3",
+    "@graphprotocol/graph-ts": "0.29.1"
+  },
+  "devDependencies": {
+    "matchstick-as": "0.5.0"
   }
 }

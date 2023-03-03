@@ -1,6 +1,3 @@
-[submodule "lib/protocol"]
-	path = lib/protocol
-	url = https://github.com/0xStation/protocol
 [submodule "lib/graph-node"]
 	path = lib/graph-node
 	url = https://github.com/graphprotocol/graph-node

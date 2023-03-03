@@ -18,7 +18,7 @@ fn add_row(list: &mut List, deployment: UnusedDeployment) {
         entity_count,
         ..
     } = deployment;
-    let subgraphs = subgraphs.unwrap_or(vec![]).join(", ");
+    let subgraphs = subgraphs.unwrap_or_default().join(", ");
 
     list.append(vec![
         id.to_string(),
@@ -58,11 +58,7 @@ pub fn record(store: Arc<SubgraphStore>) -> Result<(), Error> {
     let recorded = store.record_unused_deployments()?;
 
     for unused in store.list_unused_deployments(unused::Filter::New)? {
-        if recorded
-            .iter()
-            .find(|r| r.deployment == unused.deployment)
-            .is_some()
-        {
+        if recorded.iter().any(|r| r.deployment == unused.deployment) {
             add_row(&mut list, unused);
         }
     }
@@ -76,7 +72,7 @@ pub fn record(store: Arc<SubgraphStore>) -> Result<(), Error> {
 pub fn remove(
     store: Arc<SubgraphStore>,
     count: usize,
-    deployment: Option<String>,
+    deployment: Option<&str>,
     older: Option<chrono::Duration>,
 ) -> Result<(), Error> {
     let filter = match older {
@@ -88,7 +84,7 @@ pub fn remove(
         None => unused,
         Some(deployment) => unused
             .into_iter()
-            .filter(|u| u.deployment.as_str() == deployment)
+            .filter(|u| &u.deployment == deployment)
             .collect::<Vec<_>>(),
     };
 

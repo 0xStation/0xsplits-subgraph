@@ -1,22 +1,13 @@
-use crate::{chain::BlockFinality, EthereumAdapter, EthereumAdapterTrait};
+use crate::{chain::BlockFinality, EthereumAdapter, EthereumAdapterTrait, ENV_VARS};
 use graph::{
     blockchain::{BlockHash, BlockPtr, IngestorError},
     cheap_clone::CheapClone,
     prelude::{
-        error, ethabi::ethereum_types::H256, info, lazy_static, tokio, trace, warn, ChainStore,
-        Error, EthereumBlockWithCalls, Future01CompatExt, LogCode, Logger,
+        error, ethabi::ethereum_types::H256, info, tokio, trace, warn, ChainStore, Error,
+        EthereumBlockWithCalls, Future01CompatExt, LogCode, Logger,
     },
 };
 use std::{sync::Arc, time::Duration};
-
-lazy_static! {
-    // graph_node::config disallows setting this in a store with multiple
-    // shards. See 8b6ad0c64e244023ac20ced7897fe666 for the reason
-    pub static ref CLEANUP_BLOCKS: bool = std::env::var("GRAPH_ETHEREUM_CLEANUP_BLOCKS")
-        .ok()
-        .map(|s| s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-}
 
 pub struct BlockIngestor {
     logger: Logger,
@@ -68,7 +59,7 @@ impl BlockIngestor {
                 Ok(()) => (),
             }
 
-            if *CLEANUP_BLOCKS {
+            if ENV_VARS.cleanup_blocks {
                 self.cleanup_cached_blocks()
             }
 
@@ -101,16 +92,29 @@ impl BlockIngestor {
         trace!(self.logger, "BlockIngestor::do_poll");
 
         // Get chain head ptr from store
-        let head_block_ptr_opt = self.chain_store.chain_head_ptr()?;
+        let head_block_ptr_opt = self.chain_store.cheap_clone().chain_head_ptr().await?;
 
         // To check if there is a new block or not, fetch only the block header since that's cheaper
         // than the full block. This is worthwhile because most of the time there won't be a new
         // block, as we expect the poll interval to be much shorter than the block time.
         let latest_block = self.latest_block().await?;
 
-        // If latest block matches head block in store, nothing needs to be done
-        if Some(&latest_block) == head_block_ptr_opt.as_ref() {
-            return Ok(());
+        if let Some(head_block) = head_block_ptr_opt.as_ref() {
+            // If latest block matches head block in store, nothing needs to be done
+            if &latest_block == head_block {
+                return Ok(());
+            }
+
+            if latest_block.number < head_block.number {
+                // An ingestor might wait or move forward, but it never
+                // wavers and goes back. More seriously, this keeps us from
+                // later trying to ingest a block with the same number again
+                warn!(self.logger,
+                    "Provider went backwards - ignoring this latest block";
+                    "current_block_head" => head_block.number,
+                    "latest_block_head" => latest_block.number);
+                return Ok(());
+            }
         }
 
         // Compare latest block with head ptr, alert user if far behind
@@ -118,8 +122,7 @@ impl BlockIngestor {
             None => {
                 info!(
                     self.logger,
-                    "Downloading latest blocks from Ethereum. \
-                                    This may take a few minutes..."
+                    "Downloading latest blocks from Ethereum, this may take a few minutes..."
                 );
             }
             Some(head_block_ptr) => {
@@ -135,7 +138,7 @@ impl BlockIngestor {
                 if distance > 0 {
                     info!(
                         self.logger,
-                        "Syncing {} blocks from Ethereum.",
+                        "Syncing {} blocks from Ethereum",
                         blocks_needed;
                         "current_block_head" => head_number,
                         "latest_block_head" => latest_number,
@@ -190,7 +193,7 @@ impl BlockIngestor {
             .block_by_hash(&self.logger, block_hash)
             .compat()
             .await?
-            .ok_or_else(|| IngestorError::BlockUnavailable(block_hash))?;
+            .ok_or(IngestorError::BlockUnavailable(block_hash))?;
         let ethereum_block = self
             .eth_adapter
             .load_full_block(&self.logger, block)

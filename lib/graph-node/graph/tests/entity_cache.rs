@@ -1,16 +1,20 @@
 use async_trait::async_trait;
+use graph::blockchain::block_stream::FirehoseCursor;
 use graph::blockchain::BlockPtr;
 use graph::data::subgraph::schema::{SubgraphError, SubgraphHealth};
-use graph::prelude::{Schema, StopwatchMetrics, StoreError};
+use graph::data_source::CausalityRegion;
+use graph::prelude::{Schema, StopwatchMetrics, StoreError, UnfailOutcome};
 use lazy_static::lazy_static;
 use slog::Logger;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use graph::components::store::{EntityType, StoredDynamicDataSource, WritableStore};
+use graph::components::store::{
+    EntityKey, EntityType, ReadStore, StoredDynamicDataSource, WritableStore,
+};
 use graph::{
     components::store::{DeploymentId, DeploymentLocator},
-    prelude::{anyhow, DeploymentHash, Entity, EntityCache, EntityKey, EntityModification, Value},
+    prelude::{DeploymentHash, Entity, EntityCache, EntityModification, Value},
 };
 
 lazy_static! {
@@ -34,39 +38,63 @@ lazy_static! {
 }
 
 struct MockStore {
-    get_many_res: BTreeMap<EntityType, Vec<Entity>>,
+    get_many_res: BTreeMap<EntityKey, Entity>,
 }
 
 impl MockStore {
-    fn new(get_many_res: BTreeMap<EntityType, Vec<Entity>>) -> Self {
+    fn new(get_many_res: BTreeMap<EntityKey, Entity>) -> Self {
         Self { get_many_res }
     }
 }
 
-// The store trait must be implemented manually because mockall does not support async_trait, nor borrowing from arguments.
+impl ReadStore for MockStore {
+    fn get(&self, key: &EntityKey) -> Result<Option<Entity>, StoreError> {
+        Ok(self.get_many_res.get(key).cloned())
+    }
+
+    fn get_many(
+        &self,
+        _keys: BTreeSet<EntityKey>,
+    ) -> Result<BTreeMap<EntityKey, Entity>, StoreError> {
+        Ok(self.get_many_res.clone())
+    }
+
+    fn input_schema(&self) -> Arc<Schema> {
+        SCHEMA.clone()
+    }
+}
+
 #[async_trait]
 impl WritableStore for MockStore {
     fn block_ptr(&self) -> Option<BlockPtr> {
         unimplemented!()
     }
 
-    fn block_cursor(&self) -> Option<String> {
+    fn block_cursor(&self) -> FirehoseCursor {
         unimplemented!()
     }
 
-    fn start_subgraph_deployment(&self, _: &Logger) -> Result<(), StoreError> {
+    async fn start_subgraph_deployment(&self, _: &Logger) -> Result<(), StoreError> {
         unimplemented!()
     }
 
-    fn revert_block_operations(&self, _: BlockPtr, _: Option<&str>) -> Result<(), StoreError> {
+    async fn revert_block_operations(
+        &self,
+        _: BlockPtr,
+        _: FirehoseCursor,
+    ) -> Result<(), StoreError> {
         unimplemented!()
     }
 
-    fn unfail_deterministic_error(&self, _: &BlockPtr, _: &BlockPtr) -> Result<(), StoreError> {
+    async fn unfail_deterministic_error(
+        &self,
+        _: &BlockPtr,
+        _: &BlockPtr,
+    ) -> Result<UnfailOutcome, StoreError> {
         unimplemented!()
     }
 
-    fn unfail_non_deterministic_error(&self, _: &BlockPtr) -> Result<(), StoreError> {
+    fn unfail_non_deterministic_error(&self, _: &BlockPtr) -> Result<UnfailOutcome, StoreError> {
         unimplemented!()
     }
 
@@ -78,36 +106,18 @@ impl WritableStore for MockStore {
         unimplemented!()
     }
 
-    fn get(&self, key: &EntityKey) -> Result<Option<Entity>, StoreError> {
-        match self.get_many_res.get(&key.entity_type) {
-            Some(entities) => Ok(entities
-                .iter()
-                .find(|entity| entity.id().ok().as_ref() == Some(&key.entity_id))
-                .cloned()),
-            None => Err(StoreError::Unknown(anyhow!(
-                "nothing for type {}",
-                key.entity_type
-            ))),
-        }
-    }
-
-    fn transact_block_operations(
+    async fn transact_block_operations(
         &self,
         _: BlockPtr,
-        _: Option<String>,
+        _: FirehoseCursor,
         _: Vec<EntityModification>,
-        _: StopwatchMetrics,
+        _: &StopwatchMetrics,
         _: Vec<StoredDynamicDataSource>,
         _: Vec<SubgraphError>,
+        _: Vec<(u32, String)>,
+        _: Vec<StoredDynamicDataSource>,
     ) -> Result<(), StoreError> {
         unimplemented!()
-    }
-
-    fn get_many(
-        &self,
-        _ids_for_type: BTreeMap<&EntityType, Vec<&str>>,
-    ) -> Result<BTreeMap<EntityType, Vec<Entity>>, StoreError> {
-        Ok(self.get_many_res.clone())
     }
 
     async fn is_deployment_synced(&self) -> Result<bool, StoreError> {
@@ -118,7 +128,10 @@ impl WritableStore for MockStore {
         unimplemented!()
     }
 
-    async fn load_dynamic_data_sources(&self) -> Result<Vec<StoredDynamicDataSource>, StoreError> {
+    async fn load_dynamic_data_sources(
+        &self,
+        _manifest_idx_and_name: Vec<(u32, String)>,
+    ) -> Result<Vec<StoredDynamicDataSource>, StoreError> {
         unimplemented!()
     }
 
@@ -130,31 +143,39 @@ impl WritableStore for MockStore {
         unimplemented!()
     }
 
-    async fn health(&self, _: &DeploymentHash) -> Result<SubgraphHealth, StoreError> {
+    async fn health(&self) -> Result<SubgraphHealth, StoreError> {
         unimplemented!()
     }
 
-    fn input_schema(&self) -> Arc<Schema> {
-        SCHEMA.clone()
+    async fn flush(&self) -> Result<(), StoreError> {
+        unimplemented!()
+    }
+
+    async fn causality_region_curr_val(&self) -> Result<Option<CausalityRegion>, StoreError> {
+        unimplemented!()
     }
 }
 
 fn make_band(id: &'static str, data: Vec<(&str, Value)>) -> (EntityKey, Entity) {
     (
-        EntityKey::data(SUBGRAPH_ID.clone(), "Band".to_string(), id.into()),
+        EntityKey {
+            entity_type: EntityType::new("Band".to_string()),
+            entity_id: id.into(),
+            causality_region: CausalityRegion::ONCHAIN,
+        },
         Entity::from(data),
     )
 }
 
 fn sort_by_entity_key(mut mods: Vec<EntityModification>) -> Vec<EntityModification> {
-    mods.sort_by_key(|m| m.entity_key().clone());
+    mods.sort_by_key(|m| m.entity_ref().clone());
     mods
 }
 
 #[tokio::test]
 async fn empty_cache_modifications() {
     let store = Arc::new(MockStore::new(BTreeMap::new()));
-    let cache = EntityCache::new(store.clone());
+    let cache = EntityCache::new(store);
     let result = cache.as_modifications();
     assert_eq!(result.unwrap().modifications, vec![]);
 }
@@ -166,7 +187,7 @@ fn insert_modifications() {
     let store = MockStore::new(BTreeMap::new());
 
     let store = Arc::new(store);
-    let mut cache = EntityCache::new(store.clone());
+    let mut cache = EntityCache::new(store);
 
     let (mogwai_key, mogwai_data) = make_band(
         "mogwai",
@@ -198,12 +219,16 @@ fn insert_modifications() {
     );
 }
 
-fn entity_version_map(
-    entity_type: &str,
-    entities: Vec<Entity>,
-) -> BTreeMap<EntityType, Vec<Entity>> {
+fn entity_version_map(entity_type: &str, entities: Vec<Entity>) -> BTreeMap<EntityKey, Entity> {
     let mut map = BTreeMap::new();
-    map.insert(EntityType::from(entity_type), entities);
+    for entity in entities {
+        let key = EntityKey {
+            entity_type: EntityType::new(entity_type.to_string()),
+            entity_id: entity.id().unwrap().into(),
+            causality_region: CausalityRegion::ONCHAIN,
+        };
+        map.insert(key, entity);
+    }
     map
 }
 
@@ -228,7 +253,7 @@ fn overwrite_modifications() {
     };
 
     let store = Arc::new(store);
-    let mut cache = EntityCache::new(store.clone());
+    let mut cache = EntityCache::new(store);
 
     let (mogwai_key, mogwai_data) = make_band(
         "mogwai",
@@ -289,7 +314,7 @@ fn consecutive_modifications() {
     };
 
     let store = Arc::new(store);
-    let mut cache = EntityCache::new(store.clone());
+    let mut cache = EntityCache::new(store);
 
     // First, add "founded" and change the "label".
     let (update_key, update_data) = make_band(
@@ -300,14 +325,14 @@ fn consecutive_modifications() {
             ("label", "Rock Action Records".into()),
         ],
     );
-    cache.set(update_key.clone(), update_data.clone()).unwrap();
+    cache.set(update_key, update_data).unwrap();
 
     // Then, just reset the "label".
     let (update_key, update_data) = make_band(
         "mogwai",
         vec![("id", "mogwai".into()), ("label", Value::Null)],
     );
-    cache.set(update_key.clone(), update_data.clone()).unwrap();
+    cache.set(update_key.clone(), update_data).unwrap();
 
     // We expect a single overwrite modification for the above that leaves "id"
     // and "name" untouched, sets "founded" and removes the "label" field.

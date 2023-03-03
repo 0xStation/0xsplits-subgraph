@@ -1,9 +1,459 @@
 # NEWS
 
 ## Unreleased
-- Gracefully handle syntax errors on fulltext search. Specifically provides information about common use case
-  where whitespace characters were part of the terms.
-- Adds support for Solidity Custom Errors (issue #2577)
+
+## v0.30.0
+
+### Database locale change
+
+New `graph-node` installations now **mandate** PostgreSQL to use C locale and UTF-8 encoding. The official `docker-compose.yml` template has been updated accordingly. **Pre-existing `graph-node` installations are not concerned with this change**, but local development scripts and CI pipelines may have to adjust database initialization parameters. This can be done with `initdb -E UTF8 --locale=C`. [#4163](https://github.com/graphprotocol/graph-node/pull/4163), [#4151](https://github.com/graphprotocol/graph-node/pull/4151), [#4201](https://github.com/graphprotocol/graph-node/pull/4201), [#4340](https://github.com/graphprotocol/graph-node/pull/4340)
+
+### What's new
+
+- **AND/OR filters.** AND/OR logical operators in `where` filters have been one of `graph-node`'s [most awaited](https://github.com/graphprotocol/graph-node/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc) features. They do exactly what you would expect them to do, and are very powerful. [#579](https://github.com/graphprotocol/graph-node/issues/579), [#4080](https://github.com/graphprotocol/graph-node/pull/4080), [#4171](https://github.com/graphprotocol/graph-node/pull/4171)
+- **IPFS file data sources.** IPFS file data sources allow subgraph developers to query offchain information from IPFS directly in mappings. This feature is the culmination of much community and development efforts (GIP [here](https://forum.thegraph.com/t/gip-file-data-sources/2721)). A future iteration of this feature will also include a so-called "Availability Chain", allowing IPFS file data sources to contribute to Proofs of Indexing. At the moment, entity updates that originate from these data sources' handlers do **not** contribute to PoIs. [#4147](https://github.com/graphprotocol/graph-node/pull/4147), [#4162](https://github.com/graphprotocol/graph-node/pull/4162), and many others!
+- **Sorting by child entities** (a.k.a. nested sorting). You can now `orderBy` properties of child entities. [#4058](https://github.com/graphprotocol/graph-node/pull/4058), [#3737](https://github.com/graphprotocol/graph-node/issues/3737), [#3096](https://github.com/graphprotocol/graph-node/pull/3096)
+- Added support for a Firehose-based block ingestor. **Indexers that use the new Firehose-based block ingestor **cannot** automatically switch back to RPC.** In order to downgrade, indexers must manually delete all blocks accumulated by Firehose in the database. For this reason, we suggest caution when switching over from RPC to Firehose. [#4059](https://github.com/graphprotocol/graph-node/issues/4059), [#4204](https://github.com/graphprotocol/graph-node/pull/4204), [#4216](https://github.com/graphprotocol/graph-node/pull/4216)
+- Fields of type `Bytes` can now use less than and greater than filters. [#4285](https://github.com/graphprotocol/graph-node/pull/4285)
+- "userinfo" is now allowed in IPFS URLs (e.g. `https://foo:bar@example.com:5001/`). [#4252](https://github.com/graphprotocol/graph-node/pull/4252)
+- The default for `GRAPH_IPFS_TIMEOUT` is now 60 seconds instead of 30. [#4324](https://github.com/graphprotocol/graph-node/pull/4324)
+- Forking options can now be set via env. vars. (`GRAPH_START_BLOCK`, `GRAPH_FORK_BASE`, `GRAPH_DEBUG_FORK`). [#4308](https://github.com/graphprotocol/graph-node/pull/4308)
+- Allow retrieving GraphQL query tracing over HTTP if the env. var. `GRAPH_GRAPHQL_TRACE_TOKEN` is set and the header `X-GraphTraceQuery` is included. The query traces' JSON is the same as returned by `graphman query`. [#4243](https://github.com/graphprotocol/graph-node/pull/4243)
+- Lots of visual and filtering improvements to [#4232](https://github.com/graphprotocol/graph-node/pull/4232)
+- More aggressive in-memory caching of blocks close the chain head, potentially alleviating database load. [#4215](https://github.com/graphprotocol/graph-node/pull/4215)
+- New counter Prometheus metric `query_validation_error_counter`, labelled by deployment ID and error code. [#4230](https://github.com/graphprotocol/graph-node/pull/4230)
+graph_elasticsearch_logs_sent
+- Turned "Flushing logs to Elasticsearch" log into a Prometheus metric (`graph_elasticsearch_logs_sent`) to reduce log noise. [#4333](https://github.com/graphprotocol/graph-node/pull/4333)
+- New materialized view `info.chain_sizes`, which works the same way as the already existing `info.subgraph_sizes` and `info.table_sizes`. [#4318](https://github.com/graphprotocol/graph-node/pull/4318)
+- New `graphman stats` subcommands `set-target` and `target` to manage statistics targets for specific deployments (i.e. how much data PostgreSQL samples when analyzing a table). [#4092](https://github.com/graphprotocol/graph-node/pull/4092)
+
+### Fixes
+
+- `graph-node` now has PID=1 when running inside the official Docker image. [#4217](https://github.com/graphprotocol/graph-node/pull/4217)
+- More robust `ipfs.cat` logic during grafted subgraphs' manifest lookup. [#4284](https://github.com/graphprotocol/graph-node/pull/4284)
+- Fixed a bug that caused some large multi-entity inserts to fail because of faulty chunk size calculation. [#4250](https://github.com/graphprotocol/graph-node/pull/4250)
+- Subgraph pruning now automatically cancels ongoing autovacuum, to avoid getting stuck. [#4167](https://github.com/graphprotocol/graph-node/pull/4167)
+- `ens.getNameByHash` now fails nondeterministically if [ENS rainbow tables](https://github.com/graphprotocol/ens-rainbow) are not available locally. [#4219](https://github.com/graphprotocol/graph-node/pull/4219)
+- Some kinds of subgraph failures were previously wrongly treated as unattestable (value parsing, `enum` and scalar coercion), i.e. nondeterministic. These subgraph failure modes are now flagged as fully-deterministic. [#4278](https://github.com/graphprotocol/graph-node/pull/4278)
+
+<!--
+Dependency upgrades:
+
+* Update protobuf-related dependencies by @mangas in https://github.com/graphprotocol/graph-node/pull/4272
+* build(deps): bump git-testament from 0.2.0 to 0.2.2 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4275
+* build(deps): bump blake3 from 1.3.2 to 1.3.3 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4209
+* chore: Update ipfs api by @leoyvens in https://github.com/graphprotocol/graph-node/pull/4283
+* build(deps): bump openssl from 0.10.42 to 0.10.43 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4208
+* build(deps): bump express from 4.17.1 to 4.18.2 in /tests/integration-tests by @dependabot in https://github.com/graphprotocol/graph-node/pull/4235
+* build(deps): bump base64 from 0.13.1 to 0.20.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4241
+* Remove unused deps from `graph-server-metrics` by @neysofu in https://github.com/graphprotocol/graph-node/pull/4224
+* build(deps): bump blake3 from 1.3.1 to 1.3.2 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4194
+* build(deps): bump cid from 0.8.6 to 0.9.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4193
+* build(deps): bump indexmap from 1.9.1 to 1.9.2 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4192
+* build(deps): bump chrono from 0.4.22 to 0.4.23 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4173
+* build(deps): bump env_logger from 0.9.1 to 0.9.3 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4148
+* build(deps): bump openssl from 0.10.43 to 0.10.45 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4267
+* build(deps): bump proc-macro2 from 1.0.47 to 1.0.49 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4259
+* build(deps): bump quote from 1.0.20 to 1.0.23 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4258
+* build(deps): bump anyhow from 1.0.66 to 1.0.68 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4257
+* build(deps): bump semver from 1.0.14 to 1.0.16 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4256
+* build(deps): bump num_cpus from 1.14.0 to 1.15.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4265
+* build(deps): bump termcolor from 1.1.2 to 1.1.3 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4264
+* build(deps): bump prost-types from 0.11.5 to 0.11.6 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4312
+* build(deps): bump git-testament from 0.2.2 to 0.2.4 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4313
+* build(deps): bump proc-macro2 from 1.0.49 to 1.0.50 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4295
+* build(deps): bump cid from 0.9.0 to 0.10.1 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4289
+* build(deps): bump tower-test from `c9d84cd` to `b01bb12` by @dependabot in https://github.com/graphprotocol/graph-node/pull/4296
+* build(deps): bump prost from 0.11.5 to 0.11.6 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4297
+* build(deps): bump termcolor from 1.1.3 to 1.2.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4294
+* build(deps): bump atomic_refcell from 0.1.8 to 0.1.9 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4290
+* build(deps): bump bumpalo from 3.7.0 to 3.12.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4306
+* build(deps): bump anyhow from 1.0.68 to 1.0.69 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4344
+* build(deps): bump proc-macro2 from 1.0.50 to 1.0.51 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4343
+* build(deps): bump heck from 0.4.0 to 0.4.1 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4342
+* build(deps): bump tower-test from `b01bb12` to `74881d5` by @dependabot in https://github.com/graphprotocol/graph-node/pull/4345
+* build(deps): bump toml from 0.5.8 to 0.7.1 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4341
+-->
+
+**Full Changelog**: https://github.com/graphprotocol/graph-node/compare/v0.29.0...e5dd53df05d0af9ae4e69db2b588f1107dd9f1d6
+
+## v0.29.0
+
+### Upgrade notes
+
+- This release includes a **determinism fix** that affect a very small number of subgraphs on the network (we counted 2): if a subgraph manifest had one data source with no contract address, listening to the same events or calls of another data source that has a specified address, then the handlers for those would be called twice. After the fix, this will happen no more, and the handler will be called just once like it should.
+
+  Affected subgraph deployments:
+
+  - `Qmccst5mbV5a6vT6VvJMLPKMAA1VRgT6NGbxkLL8eDRsE7`
+  - `Qmd9nZKCH8UZU1pBzk7G8ECJr3jX3a2vAf3vowuTwFvrQg`
+ 
+  Here's an example [manifest](https://ipfs.io/ipfs/Qmd9nZKCH8UZU1pBzk7G8ECJr3jX3a2vAf3vowuTwFvrQg), taking a look at the data sources of name `ERC721` and `CryptoKitties`, both listen to the `Transfer(...)` event. Considering a block where there's only one occurence of this event, `graph-node` would duplicate it and call `handleTransfer` twice. Now this is fixed and it will be called only once per event/call that happened on chain.
+
+  In the case you're indexing one of the impacted subgraphs, you should first upgrade the `graph-node` version, then rewind the affected subgraphs to the smallest `startBlock` of their subgraph manifest. To achieve that the `graphman rewind` CLI command can be used.
+
+  See [#4055](https://github.com/graphprotocol/graph-node/pull/4055) for more information.
+
+* This release fixes another determinism bug that affects a handful of subgraphs. The bug affects all subgraphs which have an `apiVersion` **older than** 0.0.5 using call handlers. While call handlers prior to 0.0.5 should be triggered by both failed and successful transactions, in some cases failed transactions would not trigger the handlers. This resulted in nondeterministic behavior. With this version of `graph-node`, call handlers with an `apiVersion` older than 0.0.5 will always be triggered by both successful and failed transactions. Behavior for `apiVersion` 0.0.5 onward is not affected.
+  
+  The affected subgraphs are:
+
+  - `QmNY7gDNXHECV8SXoEY7hbfg4BX1aDMxTBDiFuG4huaSGA`
+  - `QmYzsCjrVwwXtdsNm3PZVNziLGmb9o513GUzkq5wwhgXDT`
+  - `QmccAwofKfT9t4XKieDqwZre1UUZxuHw5ynB35BHwHAJDT`
+  - `QmYUcrn9S1cuSZQGomLRyn8GbNHmX8viqxMykP8kKpghz6`
+  - `QmecPw1iYuu85rtdYL2J2W9qcr6p8ijich9P5GbEAmmbW5`
+  - `Qmaz1R8vcv9v3gUfksqiS9JUz7K9G8S5By3JYn8kTiiP5K`
+
+  In the case you're indexing one of the impacted subgraphs, you should first upgrade the `graph-node` version, then rewind the affected subgraphs to the smallest `startBlock` of their subgraph manifest. To achieve that the `graphman rewind` CLI command can be used.
+
+  See [#4149](https://github.com/graphprotocol/graph-node/pull/4149) for more information.
+
+### What's new
+
+* Grafted subgraphs can now add their own data sources. [#3989](https://github.com/graphprotocol/graph-node/pull/3989), [#4027](https://github.com/graphprotocol/graph-node/pull/4027), [#4030](https://github.com/graphprotocol/graph-node/pull/4030)
+* Add support for filtering by nested interfaces. [#3677](https://github.com/graphprotocol/graph-node/pull/3677)
+* Add support for message handlers in Cosmos [#3975](https://github.com/graphprotocol/graph-node/pull/3975)
+* Dynamic data sources for Firehose-backed subgraphs. [#4075](https://github.com/graphprotocol/graph-node/pull/4075)
+* Various logging improvements. [#4078](https://github.com/graphprotocol/graph-node/pull/4078), [#4084](https://github.com/graphprotocol/graph-node/pull/4084), [#4031](https://github.com/graphprotocol/graph-node/pull/4031), [#4144](https://github.com/graphprotocol/graph-node/pull/4144), [#3990](https://github.com/graphprotocol/graph-node/pull/3990)
+* Some DB queries now have GCP Cloud Insight -compliant tags that show where the query originated from. [#4079](https://github.com/graphprotocol/graph-node/pull/4079)
+* New configuration variable `GRAPH_STATIC_FILTERS_THRESHOLD` to conditionally enable static filtering based on the number of dynamic data sources. [#4008](https://github.com/graphprotocol/graph-node/pull/4008)
+* New configuration variable `GRAPH_STORE_BATCH_TARGET_DURATION`. [#4133](https://github.com/graphprotocol/graph-node/pull/4133)
+
+#### Docker image
+* The official Docker image now runs on Debian 11 "Bullseye". [#4081](https://github.com/graphprotocol/graph-node/pull/4081)
+* We now ship [`envsubst`](https://github.com/a8m/envsubst) with the official Docker image, allowing you to easily run templating logic on your configuration files. [#3974](https://github.com/graphprotocol/graph-node/pull/3974)
+
+#### Graphman
+
+We have a new documentation page for `graphman`, check it out [here](https://github.com/graphprotocol/graph-node/blob/2da697b1af17b1c947679d1b1a124628146545a6/docs/graphman.md)!
+
+* Subgraph pruning with `graphman`! [#3898](https://github.com/graphprotocol/graph-node/pull/3898), [#4125](https://github.com/graphprotocol/graph-node/pull/4125), [#4153](https://github.com/graphprotocol/graph-node/pull/4153), [#4152](https://github.com/graphprotocol/graph-node/pull/4152), [#4156](https://github.com/graphprotocol/graph-node/pull/4156), [#4041](https://github.com/graphprotocol/graph-node/pull/4041)
+* New command `graphman drop` to hastily delete a subgraph deployment. [#4035](https://github.com/graphprotocol/graph-node/pull/4035)
+* New command `graphman chain call-cache` for clearing the call cache for a given chain. [#4066](https://github.com/graphprotocol/graph-node/pull/4066)
+* Add `--delete-duplicates` flag to `graphman check-blocks` by @tilacog in https://github.com/graphprotocol/graph-node/pull/3988
+
+#### Performance
+* Restarting a node now takes much less time because `postgres_fdw` user mappings are only rebuilt upon schema changes. If necessary, you can also use the new commands `graphman database migrate` and `graphman database remap` to respectively apply schema migrations or run remappings manually. [#4009](https://github.com/graphprotocol/graph-node/pull/4009), [#4076](https://github.com/graphprotocol/graph-node/pull/4076)
+* Database replicas now won't fall behind as much when copying subgraph data. [#3966](https://github.com/graphprotocol/graph-node/pull/3966) [#3986](https://github.com/graphprotocol/graph-node/pull/3986)
+* Block handlers optimization with Firehose >= 1.1.0. [#3971](https://github.com/graphprotocol/graph-node/pull/3971)
+* Reduced the amount of data that a non-primary shard has to mirror from the primary shard. [#4015](https://github.com/graphprotocol/graph-node/pull/4015)
+* We now use advisory locks to lock deployments' tables against concurrent writes. [#4010](https://github.com/graphprotocol/graph-node/pull/4010)
+
+#### Bug fixes
+* Fixed a bug that would cause some failed subgraphs to never restart. [#3959](https://github.com/graphprotocol/graph-node/pull/3959)
+* Fixed a bug that would cause bad POIs for Firehose-backed subgraphs when processing `CREATE` calls. [#4085](https://github.com/graphprotocol/graph-node/pull/4085)
+* Fixed a bug which would cause failure to redeploy a subgraph immediately after deletion. [#4044](https://github.com/graphprotocol/graph-node/pull/4044)
+* Firehose connections are now load-balanced. [#4083](https://github.com/graphprotocol/graph-node/pull/4083)
+* Determinism fixes. **See above.** [#4055](https://github.com/graphprotocol/graph-node/pull/4055), [#4149](https://github.com/graphprotocol/graph-node/pull/4149)
+
+#### Dependency updates
+
+| Dependency          | updated to |
+| ------------------- | ---------- |
+| `anyhow`            | 1.0.66     |
+| `base64`            | 0.13.1     |
+| `clap`              | 3.2.23     |
+| `env_logger`        | 0.9.1      |
+| `iana-time-zone`    | 0.1.47     |
+| `itertools`         | 0.10.5     |
+| `jsonrpsee`         | 0.15.1     |
+| `num_cpus`          | 1.14.0     |
+| `openssl`           | 0.10.42    |
+| `pretty_assertions` | 1.3.0      |
+| `proc-macro2`       | 1.0.47     |
+| `prometheus`        | 0.13.3     |
+| `protobuf-parse`    | 3.2.0      |
+| `semver`            | 1.0.14     |
+| `serde_plain`       | 1.0.1      |
+| `sha2`              | 0.10.6     |
+| `structopt`         | removed    |
+| `tokio-stream`      | 0.1.11     |
+| `tokio-tungstenite` | 0.17.2     |
+| `tower-test`        | `d27ba65`  |
+| `url`               | 2.3.1      |
+
+<!--
+* build(deps): bump anyhow from 1.0.65 to 1.0.66 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4107
+* build(deps): bump base64 from 0.13.0 to 0.13.1 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4104
+* build(deps): bump clap from 3.2.22 to 3.2.23 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4106
+* build(deps): bump env_logger from 0.9.0 to 0.9.1 by @dependabot in https://github.com/graphprotocol/graph-node/pull/3955
+* build(deps): bump iana-time-zone from 0.1.44 to 0.1.47 by @dependabot in https://github.com/graphprotocol/graph-node/pull/3892
+* build(deps): bump itertools from 0.10.3 to 0.10.5 by @dependabot in https://github.com/graphprotocol/graph-node/pull/3996
+* build(deps): bump num_cpus from 1.13.1 to 1.14.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4141
+* build(deps): bump openssl from 0.10.41 to 0.10.42 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4022
+* build(deps): bump pretty_assertions from 1.2.1 to 1.3.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/3906
+* build(deps): bump proc-macro2 from 1.0.46 to 1.0.47 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4068
+* build(deps): bump prometheus from 0.13.2 to 0.13.3 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4105
+* build(deps): bump protobuf-parse from 3.1.0 to 3.2.0 by @dependabot in https://github.com/graphprotocol/graph-node/pull/3997
+* build(deps): bump semver from 1.0.12 to 1.0.14 by @dependabot in https://github.com/graphprotocol/graph-node/pull/3994
+* build(deps): bump serde_plain from 1.0.0 to 1.0.1 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4103
+* graph,node: Migrate from structopt to clap v3 by @tilacog in https://github.com/graphprotocol/graph-node/pull/3982
+* build(deps): bump tokio-tungstenite from 0.14.0 to 0.17.2 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4064
+* build(deps): bump tokio-stream from 0.1.10 to 0.1.11 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4057
+* build(deps): bump tower-test from `c049ded` to `d27ba65` by @dependabot in https://github.com/graphprotocol/graph-node/pull/4102
+* build(deps): bump url from 2.3.0 to 2.3.1 by @dependabot in https://github.com/graphprotocol/graph-node/pull/4023
+* Replace unmaintained `jsonrpc` crate with `jsonrpsee` by @neysofu in https://github.com/graphprotocol/graph-node/pull/3949
+-->
+
+**Full Changelog**: https://github.com/graphprotocol/graph-node/compare/v0.28.2...v0.29.0
+
+## v0.28.2
+
+**Indexers are advised to migrate to `v0.28.2`** and entirely bypass `v0.28.0` and `v0.28.1`.
+
+Fixed a bug which would cause subgraphs to stop syncing under some `graph-node` deployment configurations. [#4046](https://github.com/graphprotocol/graph-node/pull/4046), [#4051](https://github.com/graphprotocol/graph-node/pull/4051)
+
+## v0.28.1
+
+Yanked. Please migrate to `v0.28.2`.
+
+## v0.28.0
+
+#### Upgrade notes
+
+- **New DB table for dynamic data sources.**
+  For new subgraph deployments, dynamic data sources will be recorded under the `sgd*.data_sources$` table, rather than `subgraphs.dynamic_ethereum_contract_data_source`. As a consequence new deployments will not work correctly on earlier graph node versions, so _downgrading to an earlier graph node version is not supported_.
+  See issue [#3405](https://github.com/graphprotocol/graph-node/issues/3405) for other details.
+
+### What's new
+
+- The filepath which "too expensive qeueries" are sourced from is now configurable. You can use either the `GRAPH_NODE_EXPENSIVE_QUERIES_FILE` environment variable or the `expensive_queries_filename` option in the TOML configuration. [#3710](https://github.com/graphprotocol/graph-node/pull/3710)
+- The output you'll get from `graphman query` is less cluttered and overall nicer. The new options `--output` and `--trace` are available for detailed query information. [#3860](https://github.com/graphprotocol/graph-node/pull/3860)
+- `docker build` will now `--target` the production build stage by default. When you want to get the debug build, you now need `--target graph-node-debug`. [#3814](https://github.com/graphprotocol/graph-node/pull/3814)
+- Node IDs can now contain any character. The Docker start script still replaces hyphens with underscores for backwards compatibility reasons, but this behavior can be changed with the `GRAPH_NODE_ID_USE_LITERAL_VALUE` environment variable. With this new option, you can now seamlessly use the K8s-provided host names as node IDs, provided you reassign your deployments accordingly. [#3688](https://github.com/graphprotocol/graph-node/pull/3688)
+- You can now use the `conn_pool_size` option in TOML configuration files to configure the connection pool size for Firehose providers. [#3833](https://github.com/graphprotocol/graph-node/pull/3833)
+- Index nodes now have an endpoint to perform block number to canonical hash conversion, which will unblock further work towards multichain support. [#3942](https://github.com/graphprotocol/graph-node/pull/3942)
+- `_meta.block.timestamp` is now available for subgraphs indexing EVM chains. [#3738](https://github.com/graphprotocol/graph-node/pull/3738), [#3902](https://github.com/graphprotocol/graph-node/pull/3902)
+- The `deployment_eth_rpc_request_duration` metric now also observes `eth_getTransactionReceipt` requests' duration. [#3903](https://github.com/graphprotocol/graph-node/pull/3903)
+- New Prometheus metrics `query_parsing_time` and `query_validation_time` for monitoring query processing performance. [#3760](https://github.com/graphprotocol/graph-node/pull/3760)
+- New command `graphman config provider`, which shows what providers are available for new deployments on a given network and node. [#3816](https://github.com/graphprotocol/graph-node/pull/3816)
+  E.g. `$ graphman --node-id index_node_0 --config graph-node.toml config provider mainnet`
+- Experimental support for GraphQL API versioning has landed. [#3185](https://github.com/graphprotocol/graph-node/pull/3185)
+- Progress towards experimental support for off-chain data sources. [#3791](https://github.com/graphprotocol/graph-node/pull/3791)
+- Experimental integration for substreams. [#3777](https://github.com/graphprotocol/graph-node/pull/3777), [#3784](https://github.com/graphprotocol/graph-node/pull/3784), [#3897](https://github.com/graphprotocol/graph-node/pull/3897), [#3765](https://github.com/graphprotocol/graph-node/pull/3765), and others
+
+### Bug fixes
+
+- `graphman stats` now complains instead of failing silently when incorrectly setting `account-like` optimizations. [#3918](https://github.com/graphprotocol/graph-node/pull/3918)
+- Fixed inconsistent logic in the provider selection when the `limit` TOML configuration option was set. [#3816](https://github.com/graphprotocol/graph-node/pull/3816)
+- Fixed issues that would arise from dynamic data sources' names clashing against template names. [#3851](https://github.com/graphprotocol/graph-node/pull/3851)
+- Dynamic data sources triggers are now processed by insertion order. [#3851](https://github.com/graphprotocol/graph-node/pull/3851), [#3854](https://github.com/graphprotocol/graph-node/pull/3854)
+- When starting, the Docker image now replaces the `bash` process with the `graph-node` process (with a PID of 1). [#3803](https://github.com/graphprotocol/graph-node/pull/3803)
+- Refactor subgraph store tests by @evaporei in https://github.com/graphprotocol/graph-node/pull/3662
+- The `ethereum_chain_head_number` metric doesn't get out of sync anymore on chains that use Firehose. [#3771](https://github.com/graphprotocol/graph-node/pull/3771), [#3732](https://github.com/graphprotocol/graph-node/issues/3732)
+- Fixed a crash caused by bad block data from the provider. [#3944](https://github.com/graphprotocol/graph-node/pull/3944)
+- Fixed some minor Firehose connectivity issues via TCP keepalive, connection and request timeouts, and connection window size tweaks. [#3822](https://github.com/graphprotocol/graph-node/pull/3822), [#3855](https://github.com/graphprotocol/graph-node/pull/3855), [#3877](https://github.com/graphprotocol/graph-node/pull/3877), [#3810](https://github.com/graphprotocol/graph-node/pull/3810), [#3818](https://github.com/graphprotocol/graph-node/pull/3818)
+- Copying private data sources' tables across shards now works as expected. [#3836](https://github.com/graphprotocol/graph-node/pull/3836)
+
+### Performance improvements
+
+- Firehose GRPC stream requests are now compressed with `gzip`, if the server supports it. [#3893](https://github.com/graphprotocol/graph-node/pull/3893)
+- Memory efficiency improvements within the entity cache. [#3594](https://github.com/graphprotocol/graph-node/pull/3594)
+- Identical queries now benefit from GraphQL validation caching, and responses are served faster. [#3759](https://github.com/graphprotocol/graph-node/pull/3759)
+
+### Other
+
+- Avoid leaking some sensitive information in logs. [#3812](https://github.com/graphprotocol/graph-node/pull/3812)
+
+### Dependency updates
+
+| Dependency        | PR(s)                                                                                                                                                                                                                                                          | Old version | Current version |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | --------------- |
+| `serde_yaml`      | [#3746](https://github.com/graphprotocol/graph-node/pull/3746)                                                                                                                                                                                                 | `v0.8.24`   | `v0.8.26`       |
+| `web3`            | [#3806](https://github.com/graphprotocol/graph-node/pull/3806)                                                                                                                                                                                                 | `2760dbd`   | `7f8eb6d`       |
+| `clap`            | [#3794](https://github.com/graphprotocol/graph-node/pull/3794), [#3848](https://github.com/graphprotocol/graph-node/pull/3848), [#3931](https://github.com/graphprotocol/graph-node/pull/3931)                                                                 | `v3.2.8`    | `3.2.21`        |
+| `cid`             | [#3824](https://github.com/graphprotocol/graph-node/pull/3824)                                                                                                                                                                                                 | `v0.8.5`    | `v0.8.6`        |
+| `anyhow`          | [#3826](https://github.com/graphprotocol/graph-node/pull/3826), [#3841](https://github.com/graphprotocol/graph-node/pull/3841), [#3865](https://github.com/graphprotocol/graph-node/pull/3865), [#3932](https://github.com/graphprotocol/graph-node/pull/3932) | `v1.0.57`   | `1.0.65`        |
+| `chrono`          | [#3827](https://github.com/graphprotocol/graph-node/pull/3827), [#3849](https://github.com/graphprotocol/graph-node/pull/3839), [#3868](https://github.com/graphprotocol/graph-node/pull/3868)                                                                 | `v0.4.19`   | `v0.4.22`       |
+| `proc-macro2`     | [#3845](https://github.com/graphprotocol/graph-node/pull/3845)                                                                                                                                                                                                 | `v1.0.40`   | `1.0.43`        |
+| `ethabi`          | [#3847](https://github.com/graphprotocol/graph-node/pull/3847)                                                                                                                                                                                                 | `v17.1.0`   | `v17.2.0`       |
+| `once_cell`       | [#3870](https://github.com/graphprotocol/graph-node/pull/3870)                                                                                                                                                                                                 | `v1.13.0`   | `v1.13.1`       |
+| `either`          | [#3869](https://github.com/graphprotocol/graph-node/pull/3869)                                                                                                                                                                                                 | `v1.7.0`    | `v1.8.0`        |
+| `sha2`            | [#3904](https://github.com/graphprotocol/graph-node/pull/3904)                                                                                                                                                                                                 | `v0.10.2`   | `v0.10.5`       |
+| `mockall`         | [#3776](https://github.com/graphprotocol/graph-node/pull/3776)                                                                                                                                                                                                 | `v0.9.1`    | removed         |
+| `croosbeam`       | [#3772](https://github.com/graphprotocol/graph-node/pull/3772)                                                                                                                                                                                                 | `v0.8.1`    | `v0.8.2`        |
+| `async-recursion` | [#3873](https://github.com/graphprotocol/graph-node/pull/3873)                                                                                                                                                                                                 | none        | `v1.0.0`        |
+
+<!--
+### Leftover PRs from GitHub's auto-generated release notes. We don't care about these.
+
+
+- [x] wire substreams by @mangas in https://github.com/graphprotocol/graph-node/pull/3813
+- [x] Feature/substream data source by @Eduard-Voiculescu in https://github.com/graphprotocol/graph-node/pull/3780
+- [x] Feature/substreams v2 blocks by @Eduard-Voiculescu in https://github.com/graphprotocol/graph-node/pull/3876
+- [x] Substreams' Protobuf. [#3765](https://github.com/graphprotocol/graph-node/pull/3765)
+- [x] substreams trigger processor by @mangas in https://github.com/graphprotocol/graph-node/pull/3787
+- [x] substreams: data source validation by @mangas in https://github.com/graphprotocol/graph-node/pull/3783
+- [x] Filipe/test run substream fixes by @mangas in https://github.com/graphprotocol/graph-node/pull/3857
+- [x] fix(ipfs): Allowlist of safe hashes by @leoyvens in https://github.com/graphprotocol/graph-node/pull/3792
+- [x] firehose: fix request for v2 by @leoyvens in https://github.com/graphprotocol/graph-node/pull/3837
+- [x] Polling file monitor by @leoyvens in https://github.com/graphprotocol/graph-node/pull/3411
+- [x] test(store): Fix race condition in graft test by @leoyvens in https://github.com/graphprotocol/graph-node/pull/3790
+- [x] Automated generation of the `Asc` types by @pienkowb in https://github.com/graphprotocol/graph-node/pull/3722
+- [x] node: Remove assert-cli tests by leoyvens in https://github.com/graphprotocol/graph-node/pull/3789
+- [x] Adding tests for decoding of gRPC server response from substreams by @Eduard-Voiculescu in https://github.com/graphprotocol/graph-node/pull/3896
+- [x] Small improvements to `graphman stats` by @lutter in https://github.com/graphprotocol/graph-node/pull/3918
+- [x] graphql: Add deterministic error test by @leoyvens in https://github.com/graphprotocol/graph-node/pull/3788
+- [x] core: add missing word in MetricsRegistry initialization error msg by @tilacog in https://github.com/graphprotocol/graph-node/pull/3859
+- [x] async && refactor block_number by @mangas in https://github.com/graphprotocol/graph-node/pull/3873
+- [x] Release 0.27.0 by @evaporei in https://github.com/graphprotocol/graph-node/pull/3778
+- [x] firehose: Print error messages without whitespace by @leoyvens in https://github.com/graphprotocol/graph-node/pull/3856
+- [x] Move `DEAD_WEIGHT` env. flag initialization logic under the global `struct EnvVars` by @neysofu in https://github.com/graphprotocol/graph-node/pull/3744
+- [x] graphql,server: make `Resolver::resolve_object` async by @tilacog in https://github.com/graphprotocol/graph-node/pull/3938
+- [x] Fix: typos by @omahs in https://github.com/graphprotocol/graph-node/pull/3910
+- [x] Derive `IndexNodeResolver`'s `Clone` implementation by @neysofu in https://github.com/graphprotocol/graph-node/pull/3943
+
+-->
+
+## 0.27.0
+
+- Store writes are now carried out in parallel to the rest of the subgraph process, improving indexing performance for subgraphs with significant store interaction. Metrics & monitoring was updated for this new pipelined process;
+- This adds support for apiVersion 0.0.7, which makes receipts accessible in Ethereum event handlers. [Documentation link](https://thegraph.com/docs/en/developing/creating-a-subgraph/#transaction-receipts-in-event-handlers);
+- This introduces some improvements to the subgraph GraphQL API, which now supports filtering on the basis of, and filtering for entities which changed from a certain block;
+- Support was added for Arweave indexing. Tendermint was renamed to Cosmos in Graph Node. These integrations are still in "beta";
+- Callhandler block filtering for contract calls now works as intended (this was a longstanding bug);
+- Gas costing for mappings is still set at a very high default, as we continue to benchmark and refine this metric;
+- A new `graphman fix block` command was added to easily refresh a block in the block cache, or clear the cache for a given network;
+- IPFS file fetching now uses `files/stat`, as `object` was deprecated;
+- Subgraphs indexing via a Firehose can now take advantage of Firehose-side filtering;
+- NEAR subgraphs can now match accounts for receipt filtering via prefixes or suffixes.
+
+## Upgrade notes
+
+- In the case of you having custom SQL, there's a [new SQL migration](https://github.com/graphprotocol/graph-node/blob/master/store/postgres/migrations/2022-04-26-125552_alter_deployment_schemas_version/up.sql);
+- On the pipelining of the store writes, there's now a new environment variable `GRAPH_STORE_WRITE_QUEUE` (default value is `5`), that if set to `0`, the old synchronous behaviour will come in instead. The value stands for the amount of write/revert parallel operations [#3177](https://github.com/graphprotocol/graph-node/pull/3177);
+- There's now support for TLS connections in the PostgreSQL `notification_listener` [#3503](https://github.com/graphprotocol/graph-node/pull/3503);
+- GraphQL HTTP and WebSocket ports can now be set via environment variables [#2832](https://github.com/graphprotocol/graph-node/pull/2832);
+- The genesis block can be set via the `GRAPH_ETHEREUM_GENESIS_BLOCK_NUMBER` env var [#3650](https://github.com/graphprotocol/graph-node/pull/3650);
+- There's a new experimental feature to limit the number of subgraphs for a specific web3 provider. [Link for documentation](https://github.com/graphprotocol/graph-node/blob/master/docs/config.md#controlling-the-number-of-subgraphs-using-a-provider);
+- Two new GraphQL validation environment variables were included: `ENABLE_GRAPHQL_VALIDATIONS` and `SILENT_GRAPHQL_VALIDATIONS`, which are documented [here](https://github.com/graphprotocol/graph-node/blob/master/docs/environment-variables.md#graphql);
+- A bug fix for `graphman index` was landed, which fixed the behavior where if one deployment was used by multiple names would result in the command not working [#3416](https://github.com/graphprotocol/graph-node/pull/3416);
+- Another fix landed for `graphman`, the bug would allow the `unassign`/`reassign` commands to make two or more nodes index the same subgraph by mistake [#3478](https://github.com/graphprotocol/graph-node/pull/3478);
+- Error messages of eth RPC providers should be clearer during `graph-node` start up [#3422](https://github.com/graphprotocol/graph-node/pull/3422);
+- Env var `GRAPH_STORE_CONNECTION_MIN_IDLE` will no longer panic, instead it will log a warning if it exceeds the `pool_size` [#3489](https://github.com/graphprotocol/graph-node/pull/3489);
+- Failed GraphQL queries now have proper timing information in the service metrics [#3508](https://github.com/graphprotocol/graph-node/pull/3508);
+- Non-primary shards now can be disabled through setting the `pool_size` to `0` [#3513](https://github.com/graphprotocol/graph-node/pull/3513);
+- Queries with large results now have a `query_id` [#3514](https://github.com/graphprotocol/graph-node/pull/3514);
+- It's now possible to disable the LFU Cache by setting `GRAPH_QUERY_LFU_CACHE_SHARDS` to `0` [#3522](https://github.com/graphprotocol/graph-node/pull/3522);
+- `GRAPH_ACCOUNT_TABLES` env var is not supported anymore [#3525](https://github.com/graphprotocol/graph-node/pull/3525);
+- [New documentation](https://github.com/graphprotocol/graph-node/blob/master/docs/implementation/metadata.md) landed on the metadata tables;
+- `GRAPH_GRAPHQL_MAX_OPERATIONS_PER_CONNECTION` for GraphQL subscriptions now has a default of `1000` [#3735](https://github.com/graphprotocol/graph-node/pull/3735)
+
+## 0.26.0
+
+### Features
+
+- Gas metering #2414
+- Adds support for Solidity Custom Errors #2577
+- Debug fork tool #2995 #3292
+- Automatically remove unused deployments #3023
+- Fix fulltextsearch space handling #3048
+- Allow placing new deployments onto one of several shards #3049
+- Make NEAR subgraphs update their sync status #3108
+- GraphQL validations #3164
+- Add special treatment for immutable entities #3201
+- Tendermint integration #3212
+- Skip block updates when triggers are empty #3223 #3268
+- Use new GraphiQL version #3252
+- GraphQL prefetching #3256
+- Allow using Bytes as well as String/ID for the id of entities #3271
+- GraphQL route for dumping entity changes in subgraph and block #3275
+- Firehose filters #3323
+- NEAR filters #3372
+
+### Robustness
+
+- Improve our `CacheWeight` estimates #2935
+- Refactor GraphQL execution #3005
+- Setup databases in parallel #3019
+- Block ingestor now fetches receipts in parallel #3030
+- Prevent subscriptions from back-pressuring the notification queue #3053
+- Avoid parsing X triggers if the filter is empty #3083
+- Pipeline `BlockStream` #3085
+- More robust `proofOfIndexing` GraphQL route #3348
+
+### `graphman`
+
+- Add `run` command, for running a subgraph up to a block #3079
+- Add `analyze` command, for analyzing a PostgreSQL table, which can improve performance #3170
+- Add `index create` command, for adding an index to certain attributes #3175
+- Add `index list` command, for listing indexes #3198
+- Add `index drop` command, for dropping indexes #3198
+
+### Dependency Updates
+
+These are the main ones:
+
+- Updated protobuf to latest version for NEAR #2947
+- Update `web3` crate #2916 #3120 #3338
+- Update `graphql-parser` to `v0.4.0` #3020
+- Bump `itertools` from `0.10.1` to `0.10.3` #3037
+- Bump `clap` from `2.33.3` to `2.34.0` #3039
+- Bump `serde_yaml` from `0.8.21` to `0.8.23` #3065
+- Bump `tokio` from `1.14.0` to `1.15.0` #3092
+- Bump `indexmap` from `1.7.0` to `1.8.0` #3143
+- Update `ethabi` to its latest version #3144
+- Bump `structopt` from `0.3.25` to `0.3.26` #3180
+- Bump `anyhow` from `1.0.45` to `1.0.53` #3182
+- Bump `quote` from `1.0.9` to `1.0.16` #3112 #3183 #3384
+- Bump `tokio` from `1.15.0` to `1.16.1` #3208
+- Bump `semver` from `1.0.4` to `1.0.5` #3229
+- Bump `async-stream` from `0.3.2` to `0.3.3` #3361
+- Update `jsonrpc-server` #3313
+
+### Misc
+
+- More context when logging RPC calls #3128
+- Increase default reorg threshold to 250 for Ethereum #3308
+- Improve traces error logs #3353
+- Add warning and continue on parse input failures for Ethereum #3326
+
+### Upgrade Notes
+
+When upgrading to this version, we recommend taking a brief look into these changes:
+
+- Gas metering #2414
+  - Now there's a gas limit for subgraph mappings, if the limit is reached the subgraph will fail with a non-deterministic error, you can make them recover via the environment variable `GRAPH_MAX_GAS_PER_HANDLER`
+- Improve our `CacheWeight` estimates #2935
+  - This is relevant because a couple of releases back we've added a limit for the memory size of a query result. That limit is based of the `CacheWeight`.
+
+These are some of the features that will probably be helpful for indexers 😊
+
+- Allow placing new deployments onto one of several shards #3049
+- GraphQL route for dumping entity changes in subgraph and block #3275
+- Unused deployments are automatically removed now #3023
+  - The interval can be set via `GRAPH_REMOVE_UNUSED_INTERVAL`
+- Setup databases in parallel #3019
+- Block ingestor now fetches receipts in parallel #3030
+  - `GRAPH_ETHEREUM_FETCH_TXN_RECEIPTS_IN_BATCHES` can be set to `true` for the old fetching behavior
+- More robust `proofOfIndexing` GraphQL route #3348
+  - A token can be set via `GRAPH_POI_ACCESS_TOKEN` to limit access to the POI route
+- The new `graphman` commands 🙂
+
+
+### Api Version 0.0.7 and Spec Version 0.0.5
+This release brings API Version 0.0.7 in mappings, which allows Ethereum event handlers to require transaction receipts to be present in the `Event` object.
+Refer to [PR #3373](https://github.com/graphprotocol/graph-node/pull/3373) for instructions on how to enable that.
+
+
+## 0.25.2
+
+This release includes two changes:
+
+- Bug fix of blocks being skipped from processing when: a deterministic error happens **and** the `index-node` gets restarted. Issue [#3236](https://github.com/graphprotocol/graph-node/issues/3236), Pull Request: [#3316](https://github.com/graphprotocol/graph-node/pull/3316).
+- Automatic retries for non-deterministic errors. Issue [#2945](https://github.com/graphprotocol/graph-node/issues/2945), Pull Request: [#2988](https://github.com/graphprotocol/graph-node/pull/2988).
+
+This is the last patch on the `0.25` minor version, soon `0.26.0` will be released. While that we recommend updating to this version to avoid determinism issues that could be caused on `graph-node` restarts.
+
+## 0.25.1
+
+This release only adds two fixes:
+
+- The first is to address an issue with decoding the input of some calls [#3194](https://github.com/graphprotocol/graph-node/issues/3194) where subgraphs that would try to index contracts related to those would fail. Now they can advance normally.
+- The second one is to fix a non-determinism issue with the retry mechanism for errors. Whenever a non-deterministic error happened, we would keep retrying to process the block, however we should've clear the `EntityCache` on each run so that the error entity changes don't get transacted/saved in the database in the next run. This could make the POI generation non-deterministic for subgraphs that failed and retried for non-deterministic reasons, adding a new entry to the database for the POI.
+
+We strongly recommend updating to this version as quickly as possible.
 
 ## 0.25.0
 

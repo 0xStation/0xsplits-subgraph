@@ -2,20 +2,24 @@ use diesel::{ExpressionMethods, JoinOnDsl, OptionalExtension, QueryDsl, RunQuery
 use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
 use graph::{
-    components::store::BlockStore as _,
+    components::store::{BlockStore as _, DeploymentId},
+    data::query::QueryTarget,
     prelude::{
         anyhow::{anyhow, bail, Error},
         chrono::{DateTime, Duration, SecondsFormat, Utc},
-        BlockPtr, ChainStore, NodeId, QueryStoreManager,
+        BlockPtr, ChainStore, DeploymentHash, NodeId, QueryStoreManager,
     },
 };
 use graph_store_postgres::{
-    command_support::catalog::{self, copy_state, copy_table_state},
+    command_support::{
+        catalog::{self, copy_state, copy_table_state},
+        on_sync, OnSync,
+    },
     PRIMARY_SHARD,
 };
 use graph_store_postgres::{connection_pool::ConnectionPool, Shard, Store, SubgraphStore};
 
-use crate::manager::deployment;
+use crate::manager::deployment::DeploymentSearch;
 use crate::manager::display::List;
 
 type UtcDateTime = DateTime<Utc>;
@@ -55,7 +59,7 @@ impl CopyState {
         pools: &HashMap<Shard, ConnectionPool>,
         shard: &Shard,
         dst: i32,
-    ) -> Result<Option<(CopyState, Vec<CopyTableState>)>, Error> {
+    ) -> Result<Option<(CopyState, Vec<CopyTableState>, OnSync)>, Error> {
         use copy_state as cs;
         use copy_table_state as cts;
 
@@ -70,29 +74,46 @@ impl CopyState {
             .order_by(cts::entity_type)
             .load::<CopyTableState>(&dconn)?;
 
+        let on_sync = on_sync(&dconn, DeploymentId(dst))?;
+
         Ok(cs::table
             .filter(cs::dst.eq(dst))
             .get_result::<CopyState>(&dconn)
             .optional()?
-            .map(|state| (state, tables)))
+            .map(|state| (state, tables, on_sync)))
     }
 }
 
 pub async fn create(
     store: Arc<Store>,
-    src: String,
-    src_shard: Option<String>,
+    primary: ConnectionPool,
+    src: DeploymentSearch,
     shard: String,
+    shards: Vec<String>,
     node: String,
     block_offset: u32,
+    activate: bool,
+    replace: bool,
 ) -> Result<(), Error> {
     let block_offset = block_offset as i32;
+    let on_sync = match (activate, replace) {
+        (true, true) => bail!("--activate and --replace can't both be specified"),
+        (true, false) => OnSync::Activate,
+        (false, true) => OnSync::Replace,
+        (false, false) => OnSync::None,
+    };
+
     let subgraph_store = store.subgraph_store();
-    let src = deployment::locate(subgraph_store.as_ref(), src, src_shard)?;
-    let query_store = store.query_store(src.hash.clone().into(), true).await?;
+    let src = src.locate_unique(&primary)?;
+    let query_store = store
+        .query_store(
+            QueryTarget::Deployment(src.hash.clone(), Default::default()),
+            true,
+        )
+        .await?;
     let network = query_store.network_name();
 
-    let src_ptr = query_store.block_ptr()?.ok_or_else(|| anyhow!("subgraph {} has not indexed any blocks yet and can not be used as the source of a copy", src))?;
+    let src_ptr = query_store.block_ptr().await?.ok_or_else(|| anyhow!("subgraph {} has not indexed any blocks yet and can not be used as the source of a copy", src))?;
     let src_number = if src_ptr.number <= block_offset {
         bail!("subgraph {} has only indexed up to block {}, but we need at least block {} before we can copy from it", src, src_ptr.number, block_offset);
     } else {
@@ -101,27 +122,33 @@ pub async fn create(
 
     let chain_store = store
         .block_store()
-        .chain_store(&network)
+        .chain_store(network)
         .ok_or_else(|| anyhow!("could not find chain store for network {}", network))?;
-    let hashes = chain_store.block_hashes_by_block_number(src_number)?;
+    let mut hashes = chain_store.block_hashes_by_block_number(src_number)?;
     let hash = match hashes.len() {
         0 => bail!(
             "could not find a block with number {} in our cache",
             src_number
         ),
-        1 => hashes[0],
+        1 => hashes.pop().unwrap(),
         n => bail!(
             "the cache contains {} hashes for block number {}",
             n,
             src_number
         ),
     };
-    let base_ptr = BlockPtr::from((hash, src_number));
+    let base_ptr = BlockPtr::new(hash, src_number);
 
+    if !shards.contains(&shard) {
+        bail!(
+            "unknown shard {shard}, only shards {} are configured",
+            shards.join(", ")
+        )
+    }
     let shard = Shard::new(shard)?;
     let node = NodeId::new(node.clone()).map_err(|()| anyhow!("invalid node id `{}`", node))?;
 
-    let dst = subgraph_store.copy_deployment(&src, shard, node, base_ptr)?;
+    let dst = subgraph_store.copy_deployment(&src, shard, node, base_ptr, on_sync)?;
 
     println!("created deployment {} as copy of {}", dst, src);
     Ok(())
@@ -129,7 +156,8 @@ pub async fn create(
 
 pub fn activate(store: Arc<SubgraphStore>, deployment: String, shard: String) -> Result<(), Error> {
     let shard = Shard::new(shard)?;
-    let deployment = deployment::as_hash(deployment)?;
+    let deployment =
+        DeploymentHash::new(deployment).map_err(|s| anyhow!("illegal deployment hash `{}`", s))?;
     let deployment = store
         .locate_in_shard(&deployment, shard.clone())?
         .ok_or_else(|| {
@@ -179,7 +207,7 @@ pub fn list(pools: HashMap<Shard, ConnectionPool>) -> Result<(), Error> {
             println!("{:20} | {}", "deployment", deployment_hash);
             println!("{:20} | sgd{} -> sgd{} ({})", "action", src, dst, shard);
             match CopyState::find(&pools, &shard, dst)? {
-                Some((state, tables)) => match cancelled_at {
+                Some((state, tables, _)) => match cancelled_at {
                     Some(cancel_requested) => match state.cancelled_at {
                         Some(cancelled_at) => status("cancelled", cancelled_at),
                         None => status("cancel requested", cancel_requested),
@@ -202,7 +230,7 @@ pub fn list(pools: HashMap<Shard, ConnectionPool>) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn status(pools: HashMap<Shard, ConnectionPool>, dst: i32) -> Result<(), Error> {
+pub fn status(pools: HashMap<Shard, ConnectionPool>, dst: &DeploymentSearch) -> Result<(), Error> {
     use catalog::active_copies as ac;
     use catalog::deployment_schemas as ds;
 
@@ -234,9 +262,10 @@ pub fn status(pools: HashMap<Shard, ConnectionPool>, dst: i32) -> Result<(), Err
         .get(&*PRIMARY_SHARD)
         .ok_or_else(|| anyhow!("can not find deployment with id {}", dst))?;
     let pconn = primary.get()?;
+    let dst = dst.locate_unique(primary)?.id.0;
 
     let (shard, deployment) = ds::table
-        .filter(ds::id.eq(dst as i32))
+        .filter(ds::id.eq(dst))
         .select((ds::shard, ds::subgraph))
         .get_result::<(Shard, String)>(&pconn)?;
 
@@ -248,8 +277,8 @@ pub fn status(pools: HashMap<Shard, ConnectionPool>, dst: i32) -> Result<(), Err
         .map(|(_, cancelled_at)| (true, cancelled_at))
         .unwrap_or((false, None));
 
-    let (state, tables) = match CopyState::find(&pools, &shard, dst)? {
-        Some((state, tables)) => (state, tables),
+    let (state, tables, on_sync) = match CopyState::find(&pools, &shard, dst)? {
+        Some((state, tables, on_sync)) => (state, tables, on_sync),
         None => {
             if active {
                 println!("copying is queued but has not started");
@@ -275,6 +304,7 @@ pub fn status(pools: HashMap<Shard, ConnectionPool>, dst: i32) -> Result<(), Err
         "src",
         "dst",
         "target block",
+        "on sync",
         "duration",
         "status",
     ];
@@ -283,6 +313,7 @@ pub fn status(pools: HashMap<Shard, ConnectionPool>, dst: i32) -> Result<(), Err
         state.src.to_string(),
         state.dst.to_string(),
         state.target_block_number.to_string(),
+        on_sync.to_str().to_string(),
         duration(&state.started_at, &state.finished_at),
         progress,
     ];
@@ -300,7 +331,7 @@ pub fn status(pools: HashMap<Shard, ConnectionPool>, dst: i32) -> Result<(), Err
     let mut lst = List::new(lst);
     lst.append(vals);
     lst.render();
-    println!("");
+    println!();
 
     println!(
         "{:^30} | {:^8} | {:^8} | {:^8} | {:^8}",

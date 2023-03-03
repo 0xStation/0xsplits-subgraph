@@ -1,4 +1,5 @@
 use graph::data::graphql::ext::{FieldExt, TypeDefinitionExt};
+use graph::data::query::Trace;
 use graphql_parser::Pos;
 use std::collections::BTreeMap;
 
@@ -31,7 +32,7 @@ fn schema_type_objects(schema: &Schema) -> TypeObjectsMap {
 fn type_object(schema: &Schema, type_objects: &mut TypeObjectsMap, t: &s::Type) -> r::Value {
     match t {
         // We store the name of the named type here to be able to resolve it dynamically later
-        s::Type::NamedType(s) => r::Value::String(s.to_owned()),
+        s::Type::NamedType(s) => r::Value::String(s.clone()),
         s::Type::ListType(ref inner) => list_type_object(schema, type_objects, inner),
         s::Type::NonNullType(ref inner) => non_null_type_object(schema, type_objects, inner),
     }
@@ -90,7 +91,7 @@ fn type_definition_object(
 fn enum_type_object(enum_type: &s::EnumType) -> r::Value {
     object! {
         kind: r::Value::Enum(String::from("ENUM")),
-        name: enum_type.name.to_owned(),
+        name: enum_type.name.clone(),
         description: enum_type.description.clone(),
         enumValues: enum_values(enum_type),
     }
@@ -102,7 +103,7 @@ fn enum_values(enum_type: &s::EnumType) -> r::Value {
 
 fn enum_value(enum_value: &s::EnumValue) -> r::Value {
     object! {
-        name: enum_value.name.to_owned(),
+        name: enum_value.name.clone(),
         description: enum_value.description.clone(),
         isDeprecated: false,
         deprecationReason: r::Value::Null,
@@ -116,7 +117,7 @@ fn input_object_type_object(
 ) -> r::Value {
     let input_values = input_values(schema, type_objects, &input_object_type.fields);
     object! {
-        name: input_object_type.name.to_owned(),
+        name: input_object_type.name.clone(),
         kind: r::Value::Enum(String::from("INPUT_OBJECT")),
         description: input_object_type.description.clone(),
         inputFields: input_values,
@@ -129,14 +130,14 @@ fn interface_type_object(
     interface_type: &s::InterfaceType,
 ) -> r::Value {
     object! {
-        name: interface_type.name.to_owned(),
+        name: interface_type.name.clone(),
         kind: r::Value::Enum(String::from("INTERFACE")),
         description: interface_type.description.clone(),
         fields:
             field_objects(schema, type_objects, &interface_type.fields),
-        possibleTypes: schema.types_for_interface()[&interface_type.into()]
+        possibleTypes: schema.types_for_interface()[interface_type.name.as_str()]
             .iter()
-            .map(|object_type| r::Value::String(object_type.name.to_owned()))
+            .map(|object_type| r::Value::String(object_type.name.clone()))
             .collect::<Vec<_>>(),
     }
 }
@@ -152,13 +153,13 @@ fn object_type_object(
         .unwrap_or_else(|| {
             let type_object = object! {
                 kind: r::Value::Enum(String::from("OBJECT")),
-                name: object_type.name.to_owned(),
+                name: object_type.name.clone(),
                 description: object_type.description.clone(),
                 fields: field_objects(schema, type_objects, &object_type.fields),
                 interfaces: object_interfaces(schema, type_objects, object_type),
             };
 
-            type_objects.insert(object_type.name.to_owned(), type_object.clone());
+            type_objects.insert(object_type.name.clone(), type_object.clone());
             type_object
         })
 }
@@ -179,7 +180,7 @@ fn field_objects(
 
 fn field_object(schema: &Schema, type_objects: &mut TypeObjectsMap, field: &s::Field) -> r::Value {
     object! {
-        name: field.name.to_owned(),
+        name: field.name.clone(),
         description: field.description.clone(),
         args: input_values(schema, type_objects, &field.arguments),
         type: type_object(schema, type_objects, &field.field_type),
@@ -205,7 +206,7 @@ fn object_interfaces(
 
 fn scalar_type_object(scalar_type: &s::ScalarType) -> r::Value {
     object! {
-        name: scalar_type.name.to_owned(),
+        name: scalar_type.name.clone(),
         kind: r::Value::Enum(String::from("SCALAR")),
         description: scalar_type.description.clone(),
         isDeprecated: false,
@@ -215,7 +216,7 @@ fn scalar_type_object(scalar_type: &s::ScalarType) -> r::Value {
 
 fn union_type_object(schema: &Schema, union_type: &s::UnionType) -> r::Value {
     object! {
-        name: union_type.name.to_owned(),
+        name: union_type.name.clone(),
         kind: r::Value::Enum(String::from("UNION")),
         description: union_type.description.clone(),
         possibleTypes:
@@ -227,7 +228,7 @@ fn union_type_object(schema: &Schema, union_type: &s::UnionType) -> r::Value {
                         .iter()
                         .any(|implemented_name| implemented_name == &union_type.name)
                 })
-                .map(|object_type| r::Value::String(object_type.name.to_owned()))
+                .map(|object_type| r::Value::String(object_type.name.clone()))
                 .collect::<Vec<_>>(),
     }
 }
@@ -253,7 +254,7 @@ fn directive_object(
     directive: &s::DirectiveDefinition,
 ) -> r::Value {
     object! {
-        name: directive.name.to_owned(),
+        name: directive.name.clone(),
         description: directive.description.clone(),
         locations: directive_locations(directive),
         args: input_values(schema, type_objects, &directive.arguments),
@@ -288,7 +289,7 @@ fn input_value(
     input_value: &s::InputValue,
 ) -> r::Value {
     object! {
-        name: input_value.name.to_owned(),
+        name: input_value.name.clone(),
         description: input_value.description.clone(),
         type: type_object(schema, type_objects, &input_value.value_type),
         defaultValue:
@@ -358,7 +359,7 @@ impl Resolver for IntrospectionResolver {
     // see `fn as_introspection_context`, so this value is irrelevant.
     const CACHEABLE: bool = false;
 
-    async fn query_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+    async fn query_permit(&self) -> Result<tokio::sync::OwnedSemaphorePermit, QueryExecutionError> {
         unreachable!()
     }
 
@@ -366,11 +367,11 @@ impl Resolver for IntrospectionResolver {
         &self,
         _: &ExecutionContext<Self>,
         _: &a::SelectionSet,
-    ) -> Result<Option<r::Value>, Vec<QueryExecutionError>> {
-        Ok(None)
+    ) -> Result<(Option<r::Value>, Trace), Vec<QueryExecutionError>> {
+        Ok((None, Trace::None))
     }
 
-    fn resolve_objects(
+    async fn resolve_objects(
         &self,
         prefetched_objects: Option<r::Value>,
         field: &a::Field,
@@ -394,7 +395,7 @@ impl Resolver for IntrospectionResolver {
                                 _ => None,
                             })
                             .filter_map(|type_name| self.type_objects.get(type_name).cloned())
-                            .map(|v| r::Value::try_from(v))
+                            .map(r::Value::try_from)
                             .collect::<Result<_, _>>()
                             .map_err(|v| {
                                 QueryExecutionError::ValueParseError(
@@ -411,7 +412,7 @@ impl Resolver for IntrospectionResolver {
         }
     }
 
-    fn resolve_object(
+    async fn resolve_object(
         &self,
         prefetched_object: Option<r::Value>,
         field: &a::Field,

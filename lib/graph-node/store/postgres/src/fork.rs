@@ -33,7 +33,7 @@ struct Variables {
 
 /// SubgraphFork represents a simple subgraph forking mechanism
 /// which lazily fetches entities from a remote subgraph's store
-/// associated with a GraphQL endpoint at `fork_url`.
+/// associated with a GraphQL `endpoint`.
 ///
 /// Since this mechanism is used for debug forks, entities are
 /// fetched only once per id in order to avoid fetching an entity
@@ -159,7 +159,7 @@ impl SubgraphFork {
             .iter()
             .map(|f| {
                 let fname = f.name.to_string();
-                let ftype = f.field_type.to_string().replace(&['!', '[', ']'], "");
+                let ftype = f.field_type.to_string().replace(['!', '[', ']'], "");
                 match ValueType::from_str(&ftype) {
                     Ok(_) => fname,
                     Err(_) => {
@@ -184,7 +184,7 @@ query Query ($id: String) {{
     fn extract_entity(
         raw_json: &str,
         entity_type: &str,
-        fields: &Vec<Field>,
+        fields: &[Field],
     ) -> Result<Option<Entity>, StoreError> {
         let json: serde_json::Value = serde_json::from_str(raw_json).unwrap();
         let entity = &json["data"][entity_type.to_lowercase()];
@@ -267,7 +267,8 @@ mod tests {
 }"#,
             )
             .unwrap(),
-        );
+        )
+        .unwrap();
         Arc::new(schema)
     }
 

@@ -3,13 +3,12 @@ pub use prometheus::{
     labels, Counter, CounterVec, Error as PrometheusError, Gauge, GaugeVec, Histogram,
     HistogramOpts, HistogramVec, Opts, Registry,
 };
+pub mod subgraph;
+
 use std::collections::HashMap;
 
 /// Metrics for measuring where time is spent during indexing.
 pub mod stopwatch;
-
-/// Aggregates over individual values.
-pub mod aggregate;
 
 fn deployment_labels(subgraph: &str) -> HashMap<String, String> {
     labels! { String::from("deployment") => String::from(subgraph), }
@@ -63,12 +62,27 @@ pub trait MetricsRegistry: Send + Sync + 'static {
         self.global_counter(name, help, deployment_labels(subgraph))
     }
 
+    fn global_deployment_counter_vec(
+        &self,
+        name: &str,
+        help: &str,
+        subgraph: &str,
+        variable_labels: &[&str],
+    ) -> Result<CounterVec, PrometheusError>;
+
     fn global_gauge(
         &self,
         name: &str,
         help: &str,
         const_labels: HashMap<String, String>,
     ) -> Result<Gauge, PrometheusError>;
+
+    fn global_gauge_vec(
+        &self,
+        name: &str,
+        help: &str,
+        variable_labels: &[&str],
+    ) -> Result<GaugeVec, PrometheusError>;
 
     fn new_gauge(
         &self,
@@ -87,10 +101,10 @@ pub trait MetricsRegistry: Send + Sync + 'static {
         name: &str,
         help: &str,
         subgraph: &str,
-    ) -> Result<Box<Gauge>, PrometheusError> {
+    ) -> Result<Gauge, PrometheusError> {
         let opts = Opts::new(name, help).const_labels(deployment_labels(subgraph));
-        let gauge = Box::new(Gauge::with_opts(opts)?);
-        self.register(name, gauge.clone());
+        let gauge = Gauge::with_opts(opts)?;
+        self.register(name, Box::new(gauge.clone()));
         Ok(gauge)
     }
 
@@ -156,13 +170,9 @@ pub trait MetricsRegistry: Send + Sync + 'static {
         name: &str,
         help: &str,
         subgraph: &str,
-    ) -> Result<Box<Counter>, PrometheusError> {
-        let counter = Box::new(counter_with_labels(
-            name,
-            help,
-            deployment_labels(subgraph),
-        )?);
-        self.register(name, counter.clone());
+    ) -> Result<Counter, PrometheusError> {
+        let counter = counter_with_labels(name, help, deployment_labels(subgraph))?;
+        self.register(name, Box::new(counter.clone()));
         Ok(counter)
     }
 
@@ -278,4 +288,11 @@ pub trait MetricsRegistry: Send + Sync + 'static {
         self.register(name, histograms.clone());
         Ok(histograms)
     }
+
+    fn global_histogram_vec(
+        &self,
+        name: &str,
+        help: &str,
+        variable_labels: &[&str],
+    ) -> Result<HistogramVec, PrometheusError>;
 }

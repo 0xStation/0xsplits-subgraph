@@ -1,16 +1,22 @@
 //! Test relational schemas that use `Bytes` to store ids
 use diesel::connection::SimpleConnection as _;
 use diesel::pg::PgConnection;
+use graph::components::store::EntityKey;
+use graph::data::store::scalar;
+use graph::data_source::CausalityRegion;
+use graph::prelude::EntityQuery;
 use graph_mock::MockMetricsRegistry;
 use hex_literal::hex;
 use lazy_static::lazy_static;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
+use std::str::FromStr;
 use std::{collections::BTreeMap, sync::Arc};
 
 use graph::prelude::{
     o, slog, web3::types::H256, AttributeNames, ChildMultiplicity, DeploymentHash, Entity,
-    EntityCollection, EntityKey, EntityLink, EntityOrder, EntityRange, EntityWindow, Logger,
-    ParentLink, Schema, StopwatchMetrics, Value, WindowAttribute, BLOCK_NUMBER_MAX,
+    EntityCollection, EntityLink, EntityWindow, Logger, ParentLink, Schema, StopwatchMetrics,
+    Value, WindowAttribute, BLOCK_NUMBER_MAX,
 };
 use graph::{
     components::store::EntityType,
@@ -63,15 +69,15 @@ lazy_static! {
         "977c084229c72a0fa377cae304eda9099b6a2cb5d83b25cdf0f0969b69874255"
     ));
     static ref BEEF_ENTITY: Entity = entity! {
-        id: "deadbeef",
+        id: scalar::Bytes::from_str("deadbeef").unwrap(),
         name: "Beef",
-        __typename: "Thing"
     };
     static ref NAMESPACE: Namespace = Namespace::new("sgd0815".to_string()).unwrap();
     static ref THING: EntityType = EntityType::from("Thing");
     static ref MOCK_STOPWATCH: StopwatchMetrics = StopwatchMetrics::new(
         Logger::root(slog::Discard, o!()),
         THINGS_SUBGRAPH_ID.clone(),
+        "test",
         Arc::new(MockMetricsRegistry::new()),
     );
 }
@@ -84,18 +90,14 @@ fn remove_test_data(conn: &PgConnection) {
 }
 
 fn insert_entity(conn: &PgConnection, layout: &Layout, entity_type: &str, entity: Entity) {
-    let key = EntityKey::data(
-        THINGS_SUBGRAPH_ID.clone(),
-        entity_type.to_owned(),
-        entity.id().unwrap(),
-    );
+    let key = EntityKey::data(entity_type.to_owned(), entity.id().unwrap());
 
     let entity_type = EntityType::from(entity_type);
     let mut entities = vec![(&key, Cow::from(&entity))];
     let errmsg = format!("Failed to insert entity {}[{}]", entity_type, key.entity_id);
     layout
         .insert(
-            &conn,
+            conn,
             &entity_type,
             entities.as_mut_slice(),
             0,
@@ -120,14 +122,14 @@ fn create_schema(conn: &PgConnection) -> Layout {
     let schema = Schema::parse(THINGS_GQL, THINGS_SUBGRAPH_ID.clone()).unwrap();
 
     let query = format!("create schema {}", NAMESPACE.as_str());
-    conn.batch_execute(&*query).unwrap();
+    conn.batch_execute(&query).unwrap();
 
     let site = make_dummy_site(
         THINGS_SUBGRAPH_ID.clone(),
         NAMESPACE.clone(),
         NETWORK_NAME.to_string(),
     );
-    Layout::create_relational_schema(&conn, Arc::new(site), &schema)
+    Layout::create_relational_schema(conn, Arc::new(site), &schema, BTreeSet::new())
         .expect("Failed to create relational schema")
 }
 
@@ -173,7 +175,7 @@ macro_rules! assert_entity_eq {
 
 fn run_test<F>(test: F)
 where
-    F: FnOnce(&PgConnection, &Layout) -> (),
+    F: FnOnce(&PgConnection, &Layout),
 {
     run_test_with_conn(|conn| {
         // Reset state before starting
@@ -193,7 +195,11 @@ fn bad_id() {
         // We test that we get errors for various strings that are not
         // valid 'Bytes' strings; we use `find` to force the conversion
         // from String -> Bytes internally
-        let res = layout.find(conn, &*THING, "bad", BLOCK_NUMBER_MAX);
+        let res = layout.find(
+            conn,
+            &EntityKey::data(THING.as_str(), "bad"),
+            BLOCK_NUMBER_MAX,
+        );
         assert!(res.is_err());
         assert_eq!(
             "store error: Odd number of digits",
@@ -201,7 +207,11 @@ fn bad_id() {
         );
 
         // We do not allow the `\x` prefix that Postgres uses
-        let res = layout.find(conn, &*THING, "\\xbadd", BLOCK_NUMBER_MAX);
+        let res = layout.find(
+            conn,
+            &EntityKey::data(THING.as_str(), "\\xbadd"),
+            BLOCK_NUMBER_MAX,
+        );
         assert!(res.is_err());
         assert_eq!(
             "store error: Invalid character \'\\\\\' at position 0",
@@ -209,11 +219,19 @@ fn bad_id() {
         );
 
         // Having the '0x' prefix is ok
-        let res = layout.find(conn, &*THING, "0xbadd", BLOCK_NUMBER_MAX);
+        let res = layout.find(
+            conn,
+            &EntityKey::data(THING.as_str(), "0xbadd"),
+            BLOCK_NUMBER_MAX,
+        );
         assert!(res.is_ok());
 
         // Using non-hex characters is also bad
-        let res = layout.find(conn, &*THING, "nope", BLOCK_NUMBER_MAX);
+        let res = layout.find(
+            conn,
+            &EntityKey::data(THING.as_str(), "nope"),
+            BLOCK_NUMBER_MAX,
+        );
         assert!(res.is_err());
         assert_eq!(
             "store error: Invalid character \'n\' at position 0",
@@ -227,18 +245,23 @@ fn find() {
     run_test(|conn, layout| {
         const ID: &str = "deadbeef";
         const NAME: &str = "Beef";
-        insert_thing(&conn, &layout, ID, NAME);
+        insert_thing(conn, layout, ID, NAME);
 
         // Happy path: find existing entity
         let entity = layout
-            .find(conn, &*THING, ID, BLOCK_NUMBER_MAX)
+            .find(conn, &EntityKey::data(THING.as_str(), ID), BLOCK_NUMBER_MAX)
             .expect("Failed to read Thing[deadbeef]")
             .unwrap();
-        assert_entity_eq!(scrub(&*BEEF_ENTITY), entity);
+        assert_entity_eq!(scrub(&BEEF_ENTITY), entity);
+        assert!(CausalityRegion::from_entity(&entity) == CausalityRegion::ONCHAIN);
 
         // Find non-existing entity
         let entity = layout
-            .find(conn, &*THING, "badd", BLOCK_NUMBER_MAX)
+            .find(
+                conn,
+                &EntityKey::data(THING.as_str(), "badd"),
+                BLOCK_NUMBER_MAX,
+            )
             .expect("Failed to read Thing[badd]");
         assert!(entity.is_none());
     });
@@ -247,57 +270,62 @@ fn find() {
 #[test]
 fn find_many() {
     run_test(|conn, layout| {
-        const ID: &str = "deadbeef";
+        const ID: &str = "0xdeadbeef";
         const NAME: &str = "Beef";
-        const ID2: &str = "deadbeef02";
+        const ID2: &str = "0xdeadbeef02";
         const NAME2: &str = "Moo";
-        insert_thing(&conn, &layout, ID, NAME);
-        insert_thing(&conn, &layout, ID2, NAME2);
+        insert_thing(conn, layout, ID, NAME);
+        insert_thing(conn, layout, ID2, NAME2);
 
-        let mut id_map: BTreeMap<&EntityType, Vec<&str>> = BTreeMap::default();
-        id_map.insert(&*THING, vec![ID, ID2, "badd"]);
+        let mut id_map = BTreeMap::default();
+        id_map.insert(
+            (THING.clone(), CausalityRegion::ONCHAIN),
+            vec![ID.to_string(), ID2.to_string(), "badd".to_string()],
+        );
 
         let entities = layout
             .find_many(conn, &id_map, BLOCK_NUMBER_MAX)
             .expect("Failed to read many things");
-        assert_eq!(1, entities.len());
+        assert_eq!(2, entities.len());
 
-        let ids = entities
-            .get(&*THING)
-            .expect("We got some things")
-            .iter()
-            .map(|thing| thing.id().unwrap())
-            .collect::<Vec<_>>();
-
-        assert_eq!(2, ids.len());
-        assert!(ids.contains(&ID.to_owned()), "Missing ID");
-        assert!(ids.contains(&ID2.to_owned()), "Missing ID2");
+        let id_key = EntityKey {
+            entity_id: ID.into(),
+            entity_type: THING.clone(),
+            causality_region: CausalityRegion::ONCHAIN,
+        };
+        let id2_key = EntityKey {
+            entity_id: ID2.into(),
+            entity_type: THING.clone(),
+            causality_region: CausalityRegion::ONCHAIN,
+        };
+        assert!(entities.contains_key(&id_key), "Missing ID");
+        assert!(entities.contains_key(&id2_key), "Missing ID2");
     });
 }
 
 #[test]
 fn update() {
     run_test(|conn, layout| {
-        insert_entity(&conn, &layout, "Thing", BEEF_ENTITY.clone());
+        insert_entity(conn, layout, "Thing", BEEF_ENTITY.clone());
 
         // Update the entity
         let mut entity = BEEF_ENTITY.clone();
         entity.set("name", "Moo");
-        let key = EntityKey::data(
-            THINGS_SUBGRAPH_ID.clone(),
-            "Thing".to_owned(),
-            entity.id().unwrap().clone(),
-        );
+        let key = EntityKey::data("Thing".to_owned(), entity.id().unwrap());
 
-        let entity_id = entity.id().unwrap().clone();
+        let entity_id = entity.id().unwrap();
         let entity_type = key.entity_type.clone();
         let mut entities = vec![(&key, Cow::from(&entity))];
         layout
-            .update(&conn, &entity_type, &mut entities, 1, &MOCK_STOPWATCH)
+            .update(conn, &entity_type, &mut entities, 1, &MOCK_STOPWATCH)
             .expect("Failed to update");
 
         let actual = layout
-            .find(conn, &*THING, &entity_id, BLOCK_NUMBER_MAX)
+            .find(
+                conn,
+                &EntityKey::data(THING.as_str(), entity_id),
+                BLOCK_NUMBER_MAX,
+            )
             .expect("Failed to read Thing[deadbeef]")
             .unwrap();
 
@@ -310,21 +338,17 @@ fn delete() {
     run_test(|conn, layout| {
         const TWO_ID: &str = "deadbeef02";
 
-        insert_entity(&conn, &layout, "Thing", BEEF_ENTITY.clone());
+        insert_entity(conn, layout, "Thing", BEEF_ENTITY.clone());
         let mut two = BEEF_ENTITY.clone();
         two.set("id", TWO_ID);
-        insert_entity(&conn, &layout, "Thing", two);
+        insert_entity(conn, layout, "Thing", two);
 
         // Delete where nothing is getting deleted
-        let key = EntityKey::data(
-            THINGS_SUBGRAPH_ID.clone(),
-            "Thing".to_owned(),
-            "ffff".to_owned(),
-        );
+        let key = EntityKey::data("Thing".to_owned(), "ffff".to_owned());
         let entity_type = key.entity_type.clone();
         let mut entity_keys = vec![key.entity_id.as_str()];
         let count = layout
-            .delete(&conn, &entity_type, &entity_keys, 1, &MOCK_STOPWATCH)
+            .delete(conn, &entity_type, &entity_keys, 1, &MOCK_STOPWATCH)
             .expect("Failed to delete");
         assert_eq!(0, count);
 
@@ -334,7 +358,7 @@ fn delete() {
             .map(|key| *key = TWO_ID)
             .expect("Failed to update entity types");
         let count = layout
-            .delete(&conn, &entity_type, &entity_keys, 1, &MOCK_STOPWATCH)
+            .delete(conn, &entity_type, &entity_keys, 1, &MOCK_STOPWATCH)
             .expect("Failed to delete");
         assert_eq!(1, count);
     });
@@ -343,11 +367,11 @@ fn delete() {
 //
 // Test Layout::query to check that query generation is syntactically sound
 //
-const ROOT: &str = "dead00";
-const CHILD1: &str = "babe01";
-const CHILD2: &str = "babe02";
-const GRANDCHILD1: &str = "fafa01";
-const GRANDCHILD2: &str = "fafa02";
+const ROOT: &str = "0xdead00";
+const CHILD1: &str = "0xbabe01";
+const CHILD2: &str = "0xbabe02";
+const GRANDCHILD1: &str = "0xfafa01";
+const GRANDCHILD2: &str = "0xfafa02";
 
 /// Create a set of test data that forms a tree through the `parent` and `children` attributes.
 /// The tree has this form:
@@ -390,25 +414,19 @@ fn make_thing_tree(conn: &PgConnection, layout: &Layout) -> (Entity, Entity, Ent
     insert_entity(conn, layout, "Thing", root.clone());
     insert_entity(conn, layout, "Thing", child1.clone());
     insert_entity(conn, layout, "Thing", child2.clone());
-    insert_entity(conn, layout, "Thing", grand_child1.clone());
-    insert_entity(conn, layout, "Thing", grand_child2.clone());
+    insert_entity(conn, layout, "Thing", grand_child1);
+    insert_entity(conn, layout, "Thing", grand_child2);
     (root, child1, child2)
 }
 
 #[test]
 fn query() {
     fn fetch(conn: &PgConnection, layout: &Layout, coll: EntityCollection) -> Vec<String> {
+        let id = DeploymentHash::new("QmXW3qvxV7zXnwRntpj7yoK8HZVtaraZ67uMqaLRvXdxha").unwrap();
+        let query = EntityQuery::new(id, BLOCK_NUMBER_MAX, coll).first(10);
         layout
-            .query::<Entity>(
-                &*LOGGER,
-                conn,
-                coll,
-                None,
-                EntityOrder::Default,
-                EntityRange::first(10),
-                BLOCK_NUMBER_MAX,
-                None,
-            )
+            .query::<Entity>(&LOGGER, conn, query)
+            .map(|(entities, _)| entities)
             .expect("the query succeeds")
             .into_iter()
             .map(|e| e.id().expect("entities have an id"))
@@ -494,10 +512,10 @@ fn query() {
         let coll = EntityCollection::Window(vec![EntityWindow {
             child_type: THING.clone(),
             ids: vec![ROOT.to_owned()],
-            link: EntityLink::Parent(ParentLink::List(vec![vec![
-                CHILD1.to_owned(),
-                CHILD2.to_owned(),
-            ]])),
+            link: EntityLink::Parent(
+                THING.clone(),
+                ParentLink::List(vec![vec![CHILD1.to_owned(), CHILD2.to_owned()]]),
+            ),
             column_names: AttributeNames::All,
         }]);
         let things = fetch(conn, layout, coll);
@@ -509,7 +527,10 @@ fn query() {
         let coll = EntityCollection::Window(vec![EntityWindow {
             child_type: THING.clone(),
             ids: vec![CHILD1.to_owned(), CHILD2.to_owned()],
-            link: EntityLink::Parent(ParentLink::Scalar(vec![ROOT.to_owned(), ROOT.to_owned()])),
+            link: EntityLink::Parent(
+                THING.clone(),
+                ParentLink::Scalar(vec![ROOT.to_owned(), ROOT.to_owned()]),
+            ),
             column_names: AttributeNames::All,
         }]);
         let things = fetch(conn, layout, coll);

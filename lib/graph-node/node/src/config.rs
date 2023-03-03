@@ -1,9 +1,11 @@
 use graph::{
     anyhow::Error,
     blockchain::BlockchainKind,
+    firehose::{SubgraphLimit, SUBGRAPHS_PER_CONN},
     prelude::{
         anyhow::{anyhow, bail, Context, Result},
         info,
+        regex::Regex,
         serde::{
             de::{self, value, SeqAccess, Visitor},
             Deserialize, Deserializer, Serialize,
@@ -11,11 +13,10 @@ use graph::{
         serde_json, Logger, NodeId, StoreError,
     },
 };
-use graph_chain_ethereum::{NodeCapabilities, CLEANUP_BLOCKS};
+use graph_chain_ethereum::{self as ethereum, NodeCapabilities};
 use graph_store_postgres::{DeploymentPlacer, Shard as ShardName, PRIMARY_SHARD};
 
 use http::{HeaderMap, Uri};
-use regex::Regex;
 use std::fs::read_to_string;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -64,6 +65,8 @@ impl Default for Opt {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Config {
+    #[serde(skip, default = "default_node_id")]
+    pub node: NodeId,
     pub general: Option<GeneralSection>,
     #[serde(rename = "store")]
     pub stores: BTreeMap<String, Shard>,
@@ -101,14 +104,14 @@ impl Config {
         if !self.stores.contains_key(PRIMARY_SHARD.as_str()) {
             return Err(anyhow!("missing a primary store"));
         }
-        if self.stores.len() > 1 && *CLEANUP_BLOCKS {
+        if self.stores.len() > 1 && ethereum::ENV_VARS.cleanup_blocks {
             // See 8b6ad0c64e244023ac20ced7897fe666
             return Err(anyhow!(
                 "GRAPH_ETHEREUM_CLEANUP_BLOCKS can not be used with a sharded store"
             ));
         }
         for (key, shard) in self.stores.iter_mut() {
-            shard.validate(&key)?;
+            shard.validate(key)?;
         }
         self.deployment.validate()?;
 
@@ -148,11 +151,7 @@ impl Config {
     /// a config from the command line arguments in `opt`
     pub fn load(logger: &Logger, opt: &Opt) -> Result<Config> {
         if let Some(config) = &opt.config {
-            info!(logger, "Reading configuration file `{}`", config);
-            let config = read_to_string(config)?;
-            let mut config: Config = toml::from_str(&config)?;
-            config.validate()?;
-            Ok(config)
+            Self::from_file(logger, config, &opt.node_id)
         } else {
             info!(
                 logger,
@@ -162,12 +161,27 @@ impl Config {
         }
     }
 
+    pub fn from_file(logger: &Logger, path: &str, node: &str) -> Result<Config> {
+        info!(logger, "Reading configuration file `{}`", path);
+        Self::from_str(&read_to_string(path)?, node)
+    }
+
+    pub fn from_str(config: &str, node: &str) -> Result<Config> {
+        let mut config: Config = toml::from_str(config)?;
+        config.node = NodeId::new(node).map_err(|()| anyhow!("invalid node id {}", node))?;
+        config.validate()?;
+        Ok(config)
+    }
+
     fn from_opt(opt: &Opt) -> Result<Config> {
         let deployment = Deployment::from_opt(opt);
         let mut stores = BTreeMap::new();
         let chains = ChainSection::from_opt(opt)?;
-        stores.insert(PRIMARY_SHARD.to_string(), Shard::from_opt(opt)?);
+        let node = NodeId::new(opt.node_id.to_string())
+            .map_err(|()| anyhow!("invalid node id {}", opt.node_id))?;
+        stores.insert(PRIMARY_SHARD.to_string(), Shard::from_opt(true, opt)?);
         Ok(Config {
+            node,
             general: None,
             stores,
             chains,
@@ -175,7 +189,7 @@ impl Config {
         })
     }
 
-    /// Genrate a JSON representation of the config.
+    /// Generate a JSON representation of the config.
     pub fn to_json(&self) -> Result<String> {
         // It would be nice to produce a TOML representation, but that runs
         // into this error: https://github.com/alexcrichton/toml-rs/issues/142
@@ -231,10 +245,11 @@ impl Shard {
             return Err(anyhow!("missing pool size definition for shard `{}`", name));
         }
 
-        self.pool_size.validate(&self.connection)?;
+        self.pool_size
+            .validate(name == PRIMARY_SHARD.as_str(), &self.connection)?;
         for (name, replica) in self.replicas.iter_mut() {
             validate_name(name).context("illegal replica name")?;
-            replica.validate(&self.pool_size)?;
+            replica.validate(name == PRIMARY_SHARD.as_str(), &self.pool_size)?;
         }
 
         let no_weight =
@@ -249,17 +264,17 @@ impl Shard {
         Ok(())
     }
 
-    fn from_opt(opt: &Opt) -> Result<Self> {
+    fn from_opt(is_primary: bool, opt: &Opt) -> Result<Self> {
         let postgres_url = opt
             .postgres_url
             .as_ref()
             .expect("validation checked that postgres_url is set");
         let pool_size = PoolSize::Fixed(opt.store_connection_pool_size);
-        pool_size.validate(&postgres_url)?;
+        pool_size.validate(is_primary, postgres_url)?;
         let mut replicas = BTreeMap::new();
         for (i, host) in opt.postgres_secondary_hosts.iter().enumerate() {
             let replica = Replica {
-                connection: replace_host(&postgres_url, &host),
+                connection: replace_host(postgres_url, host),
                 weight: opt.postgres_host_weights.get(i + 1).cloned().unwrap_or(1),
                 pool_size: pool_size.clone(),
             };
@@ -267,7 +282,7 @@ impl Shard {
         }
         Ok(Self {
             connection: postgres_url.clone(),
-            weight: opt.postgres_host_weights.get(0).cloned().unwrap_or(1),
+            weight: opt.postgres_host_weights.first().cloned().unwrap_or(1),
             pool_size,
             fdw_pool_size: PoolSize::five(),
             replicas,
@@ -294,7 +309,7 @@ impl PoolSize {
         Self::Fixed(5)
     }
 
-    fn validate(&self, connection: &str) -> Result<()> {
+    fn validate(&self, is_primary: bool, connection: &str) -> Result<()> {
         use PoolSize::*;
 
         let pool_size = match self {
@@ -303,14 +318,17 @@ impl PoolSize {
             Rule(rules) => rules.iter().map(|rule| rule.size).min().unwrap_or(0u32),
         };
 
-        if pool_size < 2 {
-            Err(anyhow!(
+        match pool_size {
+            0 if is_primary => Err(anyhow!(
+                "the pool size for the primary shard must be at least 2"
+            )),
+            0 => Ok(()),
+            1 => Err(anyhow!(
                 "connection pool size must be at least 2, but is {} for {}",
                 pool_size,
                 connection
-            ))
-        } else {
-            Ok(())
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -325,7 +343,7 @@ impl PoolSize {
                 .map(|rule| rule.size)
                 .ok_or_else(|| {
                     anyhow!(
-                        "no rule matches `{}` for the pool of shard {}",
+                        "no rule matches node id `{}` for the pool of shard {}",
                         node.as_str(),
                         name
                     )
@@ -360,13 +378,13 @@ pub struct Replica {
 }
 
 impl Replica {
-    fn validate(&mut self, pool_size: &PoolSize) -> Result<()> {
+    fn validate(&mut self, is_primary: bool, pool_size: &PoolSize) -> Result<()> {
         self.connection = shellexpand::env(&self.connection)?.into_owned();
         if matches!(self.pool_size, PoolSize::None) {
             self.pool_size = pool_size.clone();
         }
 
-        self.pool_size.validate(&self.connection)?;
+        self.pool_size.validate(is_primary, &self.connection)?;
         Ok(())
     }
 }
@@ -421,10 +439,10 @@ impl ChainSection {
                 // Parse string (format is "NETWORK_NAME:NETWORK_CAPABILITIES:URL" OR
                 // "NETWORK_NAME::URL" which will default to NETWORK_CAPABILITIES="archive,traces")
                 let colon = arg.find(':').ok_or_else(|| {
-                    return anyhow!(
+                    anyhow!(
                         "A network name must be provided alongside the \
                          Ethereum node location. Try e.g. 'mainnet:URL'."
-                    );
+                    )
                 })?;
 
                 let (name, rest_with_delim) = arg.split_at(colon);
@@ -437,10 +455,10 @@ impl ChainSection {
                 }
 
                 let colon = rest.find(':').ok_or_else(|| {
-                    return anyhow!(
+                    anyhow!(
                         "A network name must be provided alongside the \
                          Ethereum node location. Try e.g. 'mainnet:URL'."
-                    );
+                    )
                 })?;
 
                 let (features, url_str) = rest.split_at(colon);
@@ -457,6 +475,7 @@ impl ChainSection {
                         url: url.to_string(),
                         features,
                         headers: Default::default(),
+                        rules: vec![],
                     }),
                 };
                 let entry = chains.entry(name.to_string()).or_insert_with(|| Chain {
@@ -508,9 +527,9 @@ fn btree_map_to_http_headers(kvs: BTreeMap<String, String>) -> HeaderMap {
     for (k, v) in kvs.into_iter() {
         headers.insert(
             k.parse::<http::header::HeaderName>()
-                .expect(&format!("invalid HTTP header name: {}", k)),
+                .unwrap_or_else(|_| panic!("invalid HTTP header name: {}", k)),
             v.parse::<http::header::HeaderValue>()
-                .expect(&format!("invalid HTTP header value: {}: {}", k, v)),
+                .unwrap_or_else(|_| panic!("invalid HTTP header value: {}: {}", k, v)),
         );
     }
     headers
@@ -527,12 +546,82 @@ pub struct Provider {
 pub enum ProviderDetails {
     Firehose(FirehoseProvider),
     Web3(Web3Provider),
+    Substreams(FirehoseProvider),
+    Web3Call(Web3Provider),
+}
+
+const FIREHOSE_FILTER_FEATURE: &str = "filters";
+const FIREHOSE_COMPRESSION_FEATURE: &str = "compression";
+const FIREHOSE_PROVIDER_FEATURES: [&str; 2] =
+    [FIREHOSE_FILTER_FEATURE, FIREHOSE_COMPRESSION_FEATURE];
+
+fn twenty() -> u16 {
+    20
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct FirehoseProvider {
     pub url: String,
     pub token: Option<String>,
+    #[serde(default = "twenty")]
+    pub conn_pool_size: u16,
+    #[serde(default)]
+    pub features: BTreeSet<String>,
+    #[serde(default, rename = "match")]
+    rules: Vec<Web3Rule>,
+}
+
+impl FirehoseProvider {
+    pub fn limit_for(&self, node: &NodeId) -> SubgraphLimit {
+        self.rules.limit_for(node)
+    }
+    pub fn filters_enabled(&self) -> bool {
+        self.features.contains(FIREHOSE_FILTER_FEATURE)
+    }
+    pub fn compression_enabled(&self) -> bool {
+        self.features.contains(FIREHOSE_COMPRESSION_FEATURE)
+    }
+}
+
+pub trait Web3Rules {
+    fn limit_for(&self, node: &NodeId) -> SubgraphLimit;
+}
+
+impl Web3Rules for Vec<Web3Rule> {
+    fn limit_for(&self, node: &NodeId) -> SubgraphLimit {
+        self.iter()
+            .map(|rule| rule.limit_for(node))
+            .max()
+            .unwrap_or(SubgraphLimit::Unlimited)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct Web3Rule {
+    #[serde(with = "serde_regex")]
+    name: Regex,
+    limit: usize,
+}
+
+impl PartialEq for Web3Rule {
+    fn eq(&self, other: &Self) -> bool {
+        self.name.to_string() == other.name.to_string() && self.limit == other.limit
+    }
+}
+
+impl Web3Rule {
+    fn limit_for(&self, node: &NodeId) -> SubgraphLimit {
+        match self.name.find(node.as_str()) {
+            Some(m) if m.as_str() == node.as_str() => {
+                if self.limit == 0 {
+                    SubgraphLimit::Disabled
+                } else {
+                    SubgraphLimit::Limit(self.limit)
+                }
+            }
+            _ => SubgraphLimit::Disabled,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -549,6 +638,9 @@ pub struct Web3Provider {
         deserialize_with = "deserialize_http_headers"
     )]
     pub headers: HeaderMap,
+
+    #[serde(default, rename = "match")]
+    rules: Vec<Web3Rule>,
 }
 
 impl Web3Provider {
@@ -557,6 +649,10 @@ impl Web3Provider {
             archive: self.features.contains("archive"),
             traces: self.features.contains("traces"),
         }
+    }
+
+    pub fn limit_for(&self, node: &NodeId) -> SubgraphLimit {
+        self.rules.limit_for(node)
     }
 }
 
@@ -568,7 +664,8 @@ impl Provider {
         validate_name(&self.label).context("illegal provider name")?;
 
         match self.details {
-            ProviderDetails::Firehose(ref mut firehose) => {
+            ProviderDetails::Firehose(ref mut firehose)
+            | ProviderDetails::Substreams(ref mut firehose) => {
                 firehose.url = shellexpand::env(&firehose.url)?.into_owned();
 
                 // A Firehose url must be a valid Uri since gRPC library we use (Tonic)
@@ -586,9 +683,27 @@ impl Provider {
                 if let Some(token) = &firehose.token {
                     firehose.token = Some(shellexpand::env(token)?.into_owned());
                 }
+
+                if firehose
+                    .features
+                    .iter()
+                    .any(|feature| !FIREHOSE_PROVIDER_FEATURES.contains(&feature.as_str()))
+                {
+                    return Err(anyhow!(
+                        "supported firehose endpoint filters are: {:?}",
+                        FIREHOSE_PROVIDER_FEATURES
+                    ));
+                }
+
+                if firehose.rules.iter().any(|r| r.limit > SUBGRAPHS_PER_CONN) {
+                    bail!(
+                        "per node subgraph limit for firehose/substreams has to be in the range 0-{}",
+                        SUBGRAPHS_PER_CONN
+                    );
+                }
             }
 
-            ProviderDetails::Web3(ref mut web3) => {
+            ProviderDetails::Web3Call(ref mut web3) | ProviderDetails::Web3(ref mut web3) => {
                 for feature in &web3.features {
                     if !PROVIDER_FEATURES.contains(&feature.as_str()) {
                         return Err(anyhow!(
@@ -643,6 +758,7 @@ impl<'de> Deserialize<'de> for Provider {
                 let mut transport = None;
                 let mut features = None;
                 let mut headers = None;
+                let mut nodes = Vec::new();
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -684,18 +800,29 @@ impl<'de> Deserialize<'de> for Provider {
                             let raw_headers: BTreeMap<String, String> = map.next_value()?;
                             headers = Some(btree_map_to_http_headers(raw_headers));
                         }
+                        ProviderField::Match => {
+                            nodes = map.next_value()?;
+                        }
                     }
                 }
 
                 let label = label.ok_or_else(|| serde::de::Error::missing_field("label"))?;
                 let details = match details {
-                    Some(v) => {
+                    Some(mut v) => {
                         if url.is_some()
                             || transport.is_some()
                             || features.is_some()
                             || headers.is_some()
                         {
                             return Err(serde::de::Error::custom("when `details` field is provided, deprecated `url`, `transport`, `features` and `headers` cannot be specified"));
+                        }
+
+                        match v {
+                            ProviderDetails::Firehose(ref mut firehose)
+                            | ProviderDetails::Substreams(ref mut firehose) => {
+                                firehose.rules = nodes
+                            }
+                            _ => {}
                         }
 
                         v
@@ -705,7 +832,8 @@ impl<'de> Deserialize<'de> for Provider {
                         transport: transport.unwrap_or(Transport::Rpc),
                         features: features
                             .ok_or_else(|| serde::de::Error::missing_field("features"))?,
-                        headers: headers.unwrap_or_else(|| HeaderMap::new()),
+                        headers: headers.unwrap_or_else(HeaderMap::new),
+                        rules: nodes,
                     }),
                 };
 
@@ -713,7 +841,7 @@ impl<'de> Deserialize<'de> for Provider {
             }
         }
 
-        const FIELDS: &'static [&'static str] = &[
+        const FIELDS: &[&str] = &[
             "label",
             "details",
             "transport",
@@ -730,6 +858,7 @@ impl<'de> Deserialize<'de> for Provider {
 enum ProviderField {
     Label,
     Details,
+    Match,
 
     // Deprecated fields
     Url,
@@ -944,7 +1073,7 @@ fn replace_host(url: &str, host: &str) -> String {
         Err(_) => panic!("Invalid Postgres URL {}", url),
     };
     if let Err(e) = url.set_host(Some(host)) {
-        panic!("Invalid Postgres url {}: {}", url, e.to_string());
+        panic!("Invalid Postgres url {}: {}", url, e);
     }
     String::from(url)
 }
@@ -964,6 +1093,10 @@ fn primary_store() -> Vec<String> {
 
 fn one() -> usize {
     1
+}
+
+fn default_node_id() -> NodeId {
+    NodeId::new("default").unwrap()
 }
 
 // From https://github.com/serde-rs/serde/issues/889#issuecomment-295988865
@@ -1001,10 +1134,15 @@ where
 #[cfg(test)]
 mod tests {
 
+    use crate::config::Web3Rule;
+
     use super::{
         Chain, Config, FirehoseProvider, Provider, ProviderDetails, Transport, Web3Provider,
     };
     use graph::blockchain::BlockchainKind;
+    use graph::firehose::SubgraphLimit;
+    use graph::prelude::regex::Regex;
+    use graph::prelude::NodeId;
     use http::{HeaderMap, HeaderValue};
     use std::collections::BTreeSet;
     use std::fs::read_to_string;
@@ -1087,6 +1225,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features: BTreeSet::new(),
                     headers: HeaderMap::new(),
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1112,6 +1251,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features: BTreeSet::new(),
                     headers: HeaderMap::new(),
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1129,10 +1269,8 @@ mod tests {
         );
 
         assert_eq!(true, actual.is_err());
-        assert_eq!(
-            actual.unwrap_err().to_string(),
-            "missing field `url` at line 1 column 1"
-        );
+        let err_str = actual.unwrap_err().to_string();
+        assert_eq!(err_str.contains("missing field `url`"), true, "{}", err_str);
     }
 
     #[test]
@@ -1146,9 +1284,12 @@ mod tests {
         );
 
         assert_eq!(true, actual.is_err());
+        let err_str = actual.unwrap_err().to_string();
         assert_eq!(
-            actual.unwrap_err().to_string(),
-            "missing field `features` at line 1 column 1"
+            err_str.contains("missing field `features`"),
+            true,
+            "{}",
+            err_str
         );
     }
 
@@ -1176,6 +1317,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features,
                     headers,
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1200,6 +1342,7 @@ mod tests {
                     url: "http://localhost:8545".to_owned(),
                     features: BTreeSet::new(),
                     headers: HeaderMap::new(),
+                    rules: Vec::new(),
                 }),
             },
             actual
@@ -1217,12 +1360,62 @@ mod tests {
         );
 
         assert_eq!(true, actual.is_err());
-        assert_eq!(actual.unwrap_err().to_string(), "when `details` field is provided, deprecated `url`, `transport`, `features` and `headers` cannot be specified at line 1 column 1");
+        let err_str = actual.unwrap_err().to_string();
+        assert_eq!(err_str.contains("when `details` field is provided, deprecated `url`, `transport`, `features` and `headers` cannot be specified"),true, "{}", err_str);
     }
 
     #[test]
     fn it_works_on_new_firehose_provider_from_toml() {
         let actual = toml::from_str(
+            r#"
+                label = "firehose"
+                details = { type = "firehose", url = "http://localhost:9000", features = [] }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Provider {
+                label: "firehose".to_owned(),
+                details: ProviderDetails::Firehose(FirehoseProvider {
+                    url: "http://localhost:9000".to_owned(),
+                    token: None,
+                    features: BTreeSet::new(),
+                    conn_pool_size: 20,
+                    rules: vec![],
+                }),
+            },
+            actual
+        );
+    }
+
+    #[test]
+    fn it_works_on_substreams_provider_from_toml() {
+        let actual = toml::from_str(
+            r#"
+                label = "bananas"
+                details = { type = "substreams", url = "http://localhost:9000", features = [] }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Provider {
+                label: "bananas".to_owned(),
+                details: ProviderDetails::Substreams(FirehoseProvider {
+                    url: "http://localhost:9000".to_owned(),
+                    token: None,
+                    features: BTreeSet::new(),
+                    conn_pool_size: 20,
+                    rules: vec![],
+                }),
+            },
+            actual
+        );
+    }
+    #[test]
+    fn it_works_on_new_firehose_provider_from_toml_no_features() {
+        let mut actual = toml::from_str(
             r#"
                 label = "firehose"
                 details = { type = "firehose", url = "http://localhost:9000" }
@@ -1236,17 +1429,264 @@ mod tests {
                 details: ProviderDetails::Firehose(FirehoseProvider {
                     url: "http://localhost:9000".to_owned(),
                     token: None,
+                    features: BTreeSet::new(),
+                    conn_pool_size: 20,
+                    rules: vec![],
+                }),
+            },
+            actual
+        );
+        assert! {actual.validate().is_ok()};
+    }
+
+    #[test]
+    fn it_works_on_new_firehose_provider_with_doc_example_match() {
+        let mut actual = toml::from_str(
+            r#"
+                label = "firehose"
+                details = { type = "firehose", url = "http://localhost:9000" }
+                match = [
+                  { name = "some_node_.*", limit = 10 },
+                  { name = "other_node_.*", limit = 0 } ] 
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Provider {
+                label: "firehose".to_owned(),
+                details: ProviderDetails::Firehose(FirehoseProvider {
+                    url: "http://localhost:9000".to_owned(),
+                    token: None,
+                    features: BTreeSet::new(),
+                    conn_pool_size: 20,
+                    rules: vec![
+                        Web3Rule {
+                            name: Regex::new("some_node_.*").unwrap(),
+                            limit: 10,
+                        },
+                        Web3Rule {
+                            name: Regex::new("other_node_.*").unwrap(),
+                            limit: 0,
+                        }
+                    ],
+                }),
+            },
+            actual
+        );
+        assert! { actual.validate().is_ok()};
+    }
+
+    #[test]
+    fn it_errors_on_firehose_provider_with_high_limit() {
+        let mut actual = toml::from_str(
+            r#"
+                label = "substreams"
+                details = { type = "substreams", url = "http://localhost:9000" }
+                match = [
+                  { name = "some_node_.*", limit = 101 },
+                  { name = "other_node_.*", limit = 0 } ] 
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Provider {
+                label: "substreams".to_owned(),
+                details: ProviderDetails::Substreams(FirehoseProvider {
+                    url: "http://localhost:9000".to_owned(),
+                    token: None,
+                    features: BTreeSet::new(),
+                    conn_pool_size: 20,
+                    rules: vec![
+                        Web3Rule {
+                            name: Regex::new("some_node_.*").unwrap(),
+                            limit: 101,
+                        },
+                        Web3Rule {
+                            name: Regex::new("other_node_.*").unwrap(),
+                            limit: 0,
+                        }
+                    ],
+                }),
+            },
+            actual
+        );
+        assert! { actual.validate().is_err()};
+    }
+
+    #[test]
+    fn it_works_on_new_substreams_provider_with_doc_example_match() {
+        let mut actual = toml::from_str(
+            r#"
+                label = "substreams"
+                details = { type = "substreams", url = "http://localhost:9000" }
+                match = [
+                  { name = "some_node_.*", limit = 10 },
+                  { name = "other_node_.*", limit = 0 } ] 
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Provider {
+                label: "substreams".to_owned(),
+                details: ProviderDetails::Substreams(FirehoseProvider {
+                    url: "http://localhost:9000".to_owned(),
+                    token: None,
+                    features: BTreeSet::new(),
+                    conn_pool_size: 20,
+                    rules: vec![
+                        Web3Rule {
+                            name: Regex::new("some_node_.*").unwrap(),
+                            limit: 10,
+                        },
+                        Web3Rule {
+                            name: Regex::new("other_node_.*").unwrap(),
+                            limit: 0,
+                        }
+                    ],
+                }),
+            },
+            actual
+        );
+        assert! { actual.validate().is_ok()};
+    }
+
+    #[test]
+    fn it_errors_on_substreams_provider_with_high_limit() {
+        let mut actual = toml::from_str(
+            r#"
+                label = "substreams"
+                details = { type = "substreams", url = "http://localhost:9000" }
+                match = [
+                  { name = "some_node_.*", limit = 101 },
+                  { name = "other_node_.*", limit = 0 } ] 
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Provider {
+                label: "substreams".to_owned(),
+                details: ProviderDetails::Substreams(FirehoseProvider {
+                    url: "http://localhost:9000".to_owned(),
+                    token: None,
+                    features: BTreeSet::new(),
+                    conn_pool_size: 20,
+                    rules: vec![
+                        Web3Rule {
+                            name: Regex::new("some_node_.*").unwrap(),
+                            limit: 101,
+                        },
+                        Web3Rule {
+                            name: Regex::new("other_node_.*").unwrap(),
+                            limit: 0,
+                        }
+                    ],
+                }),
+            },
+            actual
+        );
+        assert! { actual.validate().is_err()};
+    }
+
+    #[test]
+    fn it_works_on_new_firehose_provider_from_toml_unsupported_features() {
+        let actual = toml::from_str::<Provider>(
+            r#"
+                label = "firehose"
+                details = { type = "firehose", url = "http://localhost:9000", features = ["bananas"]}
+            "#,
+        ).unwrap().validate();
+        assert_eq!(true, actual.is_err(), "{:?}", actual);
+
+        if let Err(error) = actual {
+            assert_eq!(
+                true,
+                error
+                    .to_string()
+                    .starts_with("supported firehose endpoint filters are:")
+            )
+        }
+    }
+
+    #[test]
+    fn it_parses_web3_provider_rules() {
+        fn limit_for(node: &str) -> SubgraphLimit {
+            let prov = toml::from_str::<Web3Provider>(
+                r#"
+            label = "something"
+            url = "http://example.com"
+            features = []
+            match = [ { name = "some_node_.*", limit = 10 },
+                      { name = "other_node_.*", limit = 0 } ]
+        "#,
+            )
+            .unwrap();
+
+            prov.limit_for(&NodeId::new(node.to_string()).unwrap())
+        }
+
+        assert_eq!(SubgraphLimit::Limit(10), limit_for("some_node_0"));
+        assert_eq!(SubgraphLimit::Disabled, limit_for("other_node_0"));
+        assert_eq!(SubgraphLimit::Disabled, limit_for("default"));
+    }
+
+    #[test]
+    fn it_parses_web3_default_empty_unlimited() {
+        fn limit_for(node: &str) -> SubgraphLimit {
+            let prov = toml::from_str::<Web3Provider>(
+                r#"
+            label = "something"
+            url = "http://example.com"
+            features = []
+            match = []
+        "#,
+            )
+            .unwrap();
+
+            prov.limit_for(&NodeId::new(node.to_string()).unwrap())
+        }
+
+        assert_eq!(SubgraphLimit::Unlimited, limit_for("other_node_0"));
+    }
+    fn read_resource_as_string<P: AsRef<Path>>(path: P) -> String {
+        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        d.push("resources/tests");
+        d.push(path);
+
+        read_to_string(&d).unwrap_or_else(|_| panic!("resource {:?} not found", &d))
+    }
+
+    #[test]
+    fn it_works_on_web3call_provider_without_transport_from_toml() {
+        let actual = toml::from_str(
+            r#"
+            label = "peering"
+            details = { type = "web3call", url = "http://localhost:8545", features = [] }
+        "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            Provider {
+                label: "peering".to_owned(),
+                details: ProviderDetails::Web3Call(Web3Provider {
+                    transport: Transport::Rpc,
+                    url: "http://localhost:8545".to_owned(),
+                    features: BTreeSet::new(),
+                    headers: HeaderMap::new(),
+                    rules: Vec::new(),
                 }),
             },
             actual
         );
     }
 
-    fn read_resource_as_string<P: AsRef<Path>>(path: P) -> String {
-        let mut d = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        d.push("resources/tests");
-        d.push(path);
-
-        read_to_string(&d).expect(&format!("resource {:?} not found", &d))
+    #[test]
+    fn web3rules_have_the_right_order() {
+        assert!(SubgraphLimit::Unlimited > SubgraphLimit::Limit(10));
+        assert!(SubgraphLimit::Limit(10) > SubgraphLimit::Disabled);
     }
 }

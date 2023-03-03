@@ -1,66 +1,24 @@
-specVersion: 0.0.2
+specVersion: 0.0.5
 schema:
   file: ./schema.graphql
 dataSources:
-  # - kind: ethereum/contract
-  #   name: ContributorTicketFactory
-  #   network: rinkeby
-  #   source:
-  #     address: "0xC259EeF52A74527dcE52f4e9D5C45EaE9d54ebbf"
-  #     abi: ContributorTicketFactory
-  #     startBlock: 9820039
-  #   mapping:
-  #     kind: ethereum/events
-  #     apiVersion: 0.0.5
-  #     language: wasm/assemblyscript
-  #     entities:
-  #       - ContributorDirectory
-  #     abis:
-  #       - name: ContributorTicketFactory
-  #         file: ./abis/ContributorTicketFactory.json
-  #     eventHandlers:
-  #       - event: ContributorTicketCreated(indexed address,string,string)
-  #         handler: handleContributorTicketCreated
-  #     file: ./src/ContributorTicket/factory.ts
-  - kind: ethereum/contract
-    name: WaitingRoom
-    network: rinkeby
+  - kind: ethereum
+    name: SplitMain
+    network: goerli
     source:
-      address: "0x20609FDe04cCaDC162A618E2BC667De4a76C7DF0"
-      abi: WaitingRoom
-      startBlock: 10153846
+      address: "0x2ed6c4B5dA6378c7897AC67Ba9e43102Feb694EE"
+      abi: SplitMain
+      startBlock: 6374540
     mapping:
       kind: ethereum/events
-      apiVersion: 0.0.5
+      apiVersion: 0.0.7
       language: wasm/assemblyscript
       entities:
-        - ReferralInitiative
-        - InitiativeApplicant
-        - ApplicantReferral
+        - Split
       abis:
-        - name: WaitingRoom
-          file: ./abis/WaitingRoom.json
+        - name: SplitMain
+          file: ./abis/SplitMain.json
       eventHandlers:
-        - event: Endorse(indexed address,indexed address,indexed address,uint256,uint256,uint256)
-          handler: handleEndorse
-      file: ./src/waitingRoom.ts
-# templates:
-#   - name: ContributorTicket
-#     kind: ethereum/contract
-#     network: rinkeby
-#     source:
-#       abi: ContributorTicket
-#     mapping:
-#       kind: ethereum/events
-#       apiVersion: 0.0.5
-#       language: wasm/assemblyscript
-#       file: ./src/ContributorTicket/primitive.ts
-#       entities:
-#         - ContributorDirectory
-#         - ContributorTicket
-#       abis:
-#         - name: ContributorTicket
-#           file: ./abis/ContributorTicket.json
-#       eventHandlers:
-#         - event: Transfer(indexed address,indexed address,indexed uint256)
-#           handler: handleContributorTicketTransfer
+        - event: CreateSplit(indexed address)
+          handler: handleCreateSplit
+      file: ./src/mapping.ts

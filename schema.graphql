@@ -1,36 +1,3 @@
-type ContributorDirectory @entity {
-	id: ID!
-  	name: String!
-	symbol: String!
-	tickets: [ContributorTicket!] @derivedFrom(field: "directory")
-}
-
-type ContributorTicket @entity {
-  	id: ID!
-	directory: ContributorDirectory!
-	tokenId: Int!
-	owner: String!
-	mintedAt: Int!
-}
-
-type WaitingRoomInitiative @entity {
-	id: ID!
-	referralGraph: String!
-	localId: BigInt!
-	applicants: [InitiativeApplicant!] @derivedFrom(field: "initiative")
-}
-
-type InitiativeApplicant @entity {
-	id: ID!
-	initiative: WaitingRoomInitiative!
-	address: String!
-	points: BigInt!
-	referrals: [ApplicantReferral!] @derivedFrom(field: "applicant")
-}
-
-type ApplicantReferral @entity {
-	id: ID!
-	applicant: InitiativeApplicant!
-	from: String!
-	amount: BigInt!
+type Split @entity {
+  id: ID!
 }

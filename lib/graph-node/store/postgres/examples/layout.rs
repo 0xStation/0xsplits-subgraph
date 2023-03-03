@@ -1,7 +1,8 @@
 extern crate clap;
 extern crate graph_store_postgres;
 
-use clap::App;
+use clap::{arg, Command};
+use std::collections::BTreeSet;
 use std::process::exit;
 use std::{fs, sync::Arc};
 
@@ -49,7 +50,7 @@ fn print_diesel_tables(layout: &Layout) {
         let mut dsl_type = match column.column_type {
             ColumnType::Boolean => "Bool",
             ColumnType::BigDecimal | ColumnType::BigInt => "Numeric",
-            ColumnType::Bytes | ColumnType::BytesId => "Binary",
+            ColumnType::Bytes => "Binary",
             ColumnType::Int => "Integer",
             ColumnType::String | ColumnType::Enum(_) | ColumnType::TSVector(_) => "Text",
         }
@@ -68,7 +69,7 @@ fn print_diesel_tables(layout: &Layout) {
         let mut dsl_type = match column.column_type {
             ColumnType::Boolean => "bool",
             ColumnType::BigDecimal | ColumnType::BigInt => "BigDecimal",
-            ColumnType::Bytes | ColumnType::BytesId => "Vec<u8>",
+            ColumnType::Bytes => "Vec<u8>",
             ColumnType::Int => "i32",
             ColumnType::String | ColumnType::Enum(_) | ColumnType::TSVector(_) => "String",
         }
@@ -88,7 +89,7 @@ fn print_diesel_tables(layout: &Layout) {
 
     for table in &tables {
         println!("    table! {{");
-        let name = table.qualified_name.as_str().replace("\"", "");
+        let name = table.qualified_name.as_str().replace('\"', "");
         println!("        {} (vid) {{", name);
         println!("            vid -> BigInt,");
         for column in &table.as_ref().columns {
@@ -121,19 +122,17 @@ fn print_diesel_tables(layout: &Layout) {
 }
 
 pub fn main() {
-    let args = App::new("layout")
+    let args = Command::new("layout")
     .version("1.0")
     .about("Information about the database schema for a GraphQL schema")
-    .args_from_usage(
-        "-g, --generate=[KIND] 'what kind of SQL to generate. Can be ddl (the default), migrate, delete, or drop'
-        <schema>
-        [db_schema]"
-    )
+    .arg(arg!(-g --generate <KIND> "what kind of SQL to generate. Can be ddl (the default), migrate, delete, or drop"))
+    .arg(arg!(<schema>))
+    .arg(arg!(<db_schema>))
     .get_matches();
 
-    let schema = args.value_of("schema").unwrap();
-    let namespace = args.value_of("db_schema").unwrap_or("subgraphs");
-    let kind = args.value_of("generate").unwrap_or("ddl");
+    let schema = args.get_one::<&str>("schema").unwrap();
+    let namespace = args.get_one::<&str>("db_schema").unwrap_or(&"subgraphs");
+    let kind = args.get_one::<&str>("generate").unwrap_or(&"ddl");
 
     let subgraph = DeploymentHash::new("Qmasubgraph").unwrap();
     let schema = ensure(fs::read_to_string(schema), "Can not read schema file");
@@ -147,14 +146,14 @@ pub fn main() {
     );
     let site = Arc::new(make_dummy_site(subgraph, namespace, "anet".to_string()));
     let catalog = ensure(
-        Catalog::make_empty(site.clone()),
+        Catalog::for_tests(site.clone(), BTreeSet::new()),
         "Failed to construct catalog",
     );
     let layout = ensure(
-        Layout::new(site, &schema, catalog, false),
+        Layout::new(site, &schema, catalog),
         "Failed to construct Mapping",
     );
-    match kind {
+    match *kind {
         "drop" => print_drop(&layout),
         "delete" => print_delete_all(&layout),
         "ddl" => print_ddl(&layout),

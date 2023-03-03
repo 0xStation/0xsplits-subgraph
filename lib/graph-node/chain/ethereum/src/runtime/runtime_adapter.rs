@@ -35,21 +35,19 @@ use super::abi::{AscUnresolvedContractCall, AscUnresolvedContractCall_0_0_4};
 pub const ETHEREUM_CALL: Gas = Gas::new(5_000_000_000);
 
 pub struct RuntimeAdapter {
-    pub(crate) eth_adapters: Arc<EthereumNetworkAdapters>,
-    pub(crate) call_cache: Arc<dyn EthereumCallCache>,
+    pub eth_adapters: Arc<EthereumNetworkAdapters>,
+    pub call_cache: Arc<dyn EthereumCallCache>,
 }
 
 impl blockchain::RuntimeAdapter<Chain> for RuntimeAdapter {
     fn host_fns(&self, ds: &DataSource) -> Result<Vec<HostFn>, Error> {
         let abis = ds.mapping.abis.clone();
         let call_cache = self.call_cache.cheap_clone();
-        let eth_adapter = self
-            .eth_adapters
-            .cheapest_with(&NodeCapabilities {
-                archive: ds.mapping.requires_archive()?,
-                traces: false,
-            })?
-            .cheap_clone();
+        // Ethereum calls should prioritise call-only adapters if one is available.
+        let eth_adapter = self.eth_adapters.call_or_cheapest(Some(&NodeCapabilities {
+            archive: ds.mapping.requires_archive()?,
+            traces: false,
+        }))?;
 
         let ethereum_call = HostFn {
             name: "ethereum.call",
@@ -77,9 +75,9 @@ fn ethereum_call(
     // function signature; subgraphs using an apiVersion < 0.0.4 don't pass
     // the signature along with the call.
     let call: UnresolvedContractCall = if ctx.heap.api_version() >= Version::new(0, 0, 4) {
-        asc_get::<_, AscUnresolvedContractCall_0_0_4, _>(ctx.heap, wasm_ptr.into())?
+        asc_get::<_, AscUnresolvedContractCall_0_0_4, _>(ctx.heap, wasm_ptr.into(), &ctx.gas)?
     } else {
-        asc_get::<_, AscUnresolvedContractCall, _>(ctx.heap, wasm_ptr.into())?
+        asc_get::<_, AscUnresolvedContractCall, _>(ctx.heap, wasm_ptr.into(), &ctx.gas)?
     };
 
     let result = eth_call(
@@ -91,7 +89,7 @@ fn ethereum_call(
         abis,
     )?;
     match result {
-        Some(tokens) => Ok(asc_new(ctx.heap, tokens.as_slice())?),
+        Some(tokens) => Ok(asc_new(ctx.heap, tokens.as_slice(), &ctx.gas)?),
         None => Ok(AscPtr::null()),
     }
 }

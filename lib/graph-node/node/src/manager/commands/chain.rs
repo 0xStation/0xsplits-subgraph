@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use graph::blockchain::BlockPtr;
+use graph::cheap_clone::CheapClone;
 use graph::prelude::BlockNumber;
 use graph::prelude::ChainStore as _;
 use graph::prelude::EthereumBlock;
@@ -10,11 +11,12 @@ use graph::{
     components::store::BlockStore as _, prelude::anyhow::Error, prelude::serde_json as json,
 };
 use graph_store_postgres::BlockStore;
+use graph_store_postgres::ChainStore;
 use graph_store_postgres::{
     command_support::catalog::block_store, connection_pool::ConnectionPool,
 };
 
-pub fn list(primary: ConnectionPool, store: Arc<BlockStore>) -> Result<(), Error> {
+pub async fn list(primary: ConnectionPool, store: Arc<BlockStore>) -> Result<(), Error> {
     let mut chains = {
         let conn = primary.get()?;
         block_store::load_chains(&conn)?
@@ -35,7 +37,8 @@ pub fn list(primary: ConnectionPool, store: Arc<BlockStore>) -> Result<(), Error
         let head_block = match store.chain_store(&chain.name) {
             None => "no chain".to_string(),
             Some(chain_store) => chain_store
-                .chain_head_ptr()?
+                .chain_head_ptr()
+                .await?
                 .map(|ptr| ptr.number.to_string())
                 .unwrap_or("none".to_string()),
         };
@@ -47,7 +50,20 @@ pub fn list(primary: ConnectionPool, store: Arc<BlockStore>) -> Result<(), Error
     Ok(())
 }
 
-pub fn info(
+pub async fn clear_call_cache(
+    chain_store: Arc<ChainStore>,
+    from: i32,
+    to: i32,
+) -> Result<(), Error> {
+    println!(
+        "Removing entries for blocks from {from} to {to} from the call cache for `{}`",
+        chain_store.chain
+    );
+    chain_store.clear_call_cache(from, to).await?;
+    Ok(())
+}
+
+pub async fn info(
     primary: ConnectionPool,
     store: Arc<BlockStore>,
     name: String,
@@ -55,7 +71,7 @@ pub fn info(
     hashes: bool,
 ) -> Result<(), Error> {
     fn row(label: &str, value: impl std::fmt::Display) {
-        println!("{:<16} | {}", label, value.to_string());
+        println!("{:<16} | {}", label, value);
     }
 
     fn print_ptr(label: &str, ptr: Option<BlockPtr>, hashes: bool) {
@@ -80,11 +96,12 @@ pub fn info(
     let chain_store = store
         .chain_store(&chain.name)
         .ok_or_else(|| anyhow!("unknown chain: {}", name))?;
-    let head_block = chain_store.chain_head_ptr()?;
+    let head_block = chain_store.cheap_clone().chain_head_ptr().await?;
     let ancestor = match &head_block {
         None => None,
         Some(head_block) => chain_store
-            .ancestor_block(head_block.clone(), offset)?
+            .ancestor_block(head_block.clone(), offset)
+            .await?
             .map(json::from_value::<EthereumBlock>)
             .transpose()?
             .map(|b| b.block.block_ptr()),
