@@ -74,7 +74,6 @@ export function handleCreateSplitCall(call: CreateSplitCall): void {
     splitRecipient.split = splitId;
     splitRecipient.recipient = recipientId;
     splitRecipient.allocation = allocations[i];
-    splitRecipient.tokens = [];
     splitRecipient.save();
     splitRecipientIds.push(splitRecipientId);
   }
@@ -134,6 +133,7 @@ function handleDistribution(
     let splitRecipientToken = SplitRecipientToken.load(splitRecipientTokenId);
     if (!splitRecipientToken) {
       splitRecipientToken = new SplitRecipientToken(splitRecipientTokenId);
+      splitRecipientToken.splitRecipient = splitRecipient.id;
       splitRecipientToken.token = token;
       splitRecipientToken.totalDistributed = BigInt.fromI32(0);
       splitRecipientToken.totalClaimed = BigInt.fromI32(0);
@@ -144,14 +144,6 @@ function handleDistribution(
     );
 
     splitRecipientToken.save();
-
-    // add token to split recipient
-    // .push() may seem like we'll have duplicate ids but, The Graph automatically keeps this list unique for us it seems!
-    let tokens = splitRecipient.tokens;
-    tokens.push(splitRecipientTokenId);
-
-    splitRecipient.tokens = tokens;
-    splitRecipient.save();
   }
 }
 
