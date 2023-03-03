@@ -21,4 +21,7 @@ dataSources:
       eventHandlers:
         - event: CreateSplit(indexed address)
           handler: handleCreateSplit
+      callHandlers:
+        - function: createSplit(address[],uint32[],uint32,address)
+          handler: handleCreateSplitCall
       file: ./src/mapping.ts

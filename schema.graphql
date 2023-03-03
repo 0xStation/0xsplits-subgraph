@@ -1,3 +1,10 @@
 type Split @entity {
   id: ID!
 }
+
+type Member @entity {
+  id: ID!
+  split: String!
+  recipient: String!
+  allocation: BigInt!
+}

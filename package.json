@@ -5,7 +5,7 @@
     "gen": "graph codegen",
     "build": "graph build",
     "ipfs": "ipfs daemon --init",
-    "graph": "cd lib/graph-node && source ../../.env && cargo run -p graph-node --release -- --postgres-url postgresql://$USERNAME:@localhost:5432/graph-node --ethereum-rpc goerli::https://eth-goerli.alchemyapi.io/v2/$ALCHEMY_API_KEY --ipfs 127.0.0.1:5001",
+    "graph": "cd lib/graph-node && source ../../.env && cargo run -p graph-node --release -- --postgres-url postgresql://$USERNAME:@localhost:5432/graph-node --ethereum-rpc mainnet::https://eth-mainnet.alchemyapi.io/v2/$ALCHEMY_API_KEY --ipfs 127.0.0.1:5001",
     "create": "graph create --node http://localhost:8020/ 0xstation/0xsplits",
     "remove": "graph remove --node http://localhost:8020/ 0xstation/0xsplits",
     "deploy": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 0xstation/0xsplits",
