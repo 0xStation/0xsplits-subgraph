@@ -20,7 +20,6 @@ type SplitRecipient @entity {
 
 type Recipient @entity {
   id: ID!
-  totalEthClaimed: BigInt!
 
   # can't use derived relations inside mapping.ts
   # splits: [SplitRecipient!]! @derivedFrom(field: "split")

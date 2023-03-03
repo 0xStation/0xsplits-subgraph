@@ -23,6 +23,8 @@ dataSources:
           handler: handleCreateSplit
         - event: DistributeETH(indexed address,uint256,indexed address)
           handler: handleDistributeETH
+        - event: Withdrawal(indexed address,uint256,address[],uint256[])
+          handler: handleWithdrawal
       callHandlers:
         - function: createSplit(address[],uint32[],uint32,address)
           handler: handleCreateSplitCall

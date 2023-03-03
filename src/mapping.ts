@@ -119,3 +119,45 @@ export function handleDistributeETH(event: DistributeETH): void {
     splitRecipient.save();
   }
 }
+
+// TODO: add split-withdraw events table for history tab
+// TODO: handle split updates
+// TODO: handle ERC20s
+export function handleWithdrawal(event: Withdrawal): void {
+  const recipientId = event.params.account.toHex();
+  let recipient = Recipient.load(recipientId);
+  if (!recipient) {
+    log.warning("handleWithdrawal, missing recipient: " + recipientId, []);
+    return;
+  }
+
+  const splitRecipientIds = recipient.splits;
+  for (let i: i32 = 0; i < splitRecipientIds.length; i++) {
+    let splitRecipient = SplitRecipient.load(splitRecipientIds[i]);
+    if (!splitRecipient) {
+      log.warning(
+        "handleWithdrawal, missing splitRecipient: " + splitRecipientIds[i],
+        []
+      );
+      return;
+    }
+    let split = Split.load(splitRecipient.split);
+    if (!split) {
+      log.warning(
+        "handleWithdrawal, missing split: " + splitRecipient.split,
+        []
+      );
+      return;
+    }
+
+    const splitEthClaimed = splitRecipient.totalEthDistributed.minus(
+      splitRecipient.totalEthClaimed
+    );
+
+    splitRecipient.totalEthClaimed = splitRecipient.totalEthDistributed;
+    splitRecipient.save();
+
+    split.totalEthClaimed = split.totalEthClaimed.plus(splitEthClaimed);
+    split.save();
+  }
+}
