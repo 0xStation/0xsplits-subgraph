@@ -3,8 +3,9 @@ import {
   CreateSplit,
   CreateSplitCall,
   DistributeETH,
+  Withdrawal,
 } from "../generated/SplitMain/SplitMain";
-import { Member, Split } from "../generated/schema";
+import { Recipient, SplitRecipient, Split } from "../generated/schema";
 
 const PERCENTAGE_SCALE = 1_000_000;
 
@@ -32,7 +33,7 @@ export function handleCreateSplit(event: CreateSplit): void {
   if (!split) {
     log.warning("handleCreateSplit: split does not yet exist", []);
     split = new Split(splitId);
-    split.members = [];
+    split.recipients = [];
     split.save();
   }
 }
@@ -47,27 +48,39 @@ export function handleCreateSplitCall(call: CreateSplitCall): void {
   }
   split.distributorFee = call.inputs.distributorFee;
   split.totalEthDistributed = BigInt.fromI32(0);
+  split.totalEthClaimed = BigInt.fromI32(0);
 
-  let accounts = call.inputs.accounts;
+  let recipients = call.inputs.accounts;
   let allocations = call.inputs.percentAllocations;
-  let memberIds = new Array<string>();
+  let splitRecipientIds = new Array<string>();
 
-  for (let i: i32 = 0; i < accounts.length; i++) {
-    let accountId = accounts[i].toHex();
-    let memberId = joinIds([splitId, accountId]);
+  for (let i: i32 = 0; i < recipients.length; i++) {
+    let recipientId = recipients[i].toHex();
+    let splitRecipientId = joinIds([splitId, recipientId]);
 
-    log.warning("handleCreateSplitCall: member pre-create", [memberId]);
-    let member = new Member(memberId);
-    member.split = splitId;
-    member.recipient = accountId;
-    member.allocation = allocations[i];
-    member.totalEthDistributed = BigInt.fromI32(0);
-    member.save();
-    memberIds.push(memberId);
-    log.warning("handleCreateSplitCall: member saved", [memberId]);
+    let recipient = Recipient.load(recipientId);
+    if (!recipient) {
+      recipient = new Recipient(recipientId);
+      recipient.splits = [];
+      recipient.totalEthClaimed = BigInt.fromI32(0);
+    }
+    let recipientSplits = recipient.splits;
+    recipientSplits.push(splitRecipientId);
+
+    recipient.splits = recipientSplits;
+    recipient.save();
+
+    let splitRecipient = new SplitRecipient(splitRecipientId);
+    splitRecipient.split = splitId;
+    splitRecipient.recipient = recipientId;
+    splitRecipient.allocation = allocations[i];
+    splitRecipient.totalEthDistributed = BigInt.fromI32(0);
+    splitRecipient.totalEthClaimed = BigInt.fromI32(0);
+    splitRecipient.save();
+    splitRecipientIds.push(splitRecipientId);
   }
 
-  split.members = memberIds;
+  split.recipients = splitRecipientIds;
   split.save();
 }
 
@@ -90,16 +103,19 @@ export function handleDistributeETH(event: DistributeETH): void {
   );
   amountToSplit = amountToSplit.minus(distributorFeeAmount);
 
-  const memberIds = split.members;
-  for (let i: i32 = 0; i < memberIds.length; i++) {
-    let member = Member.load(memberIds[i]);
-    if (!member) {
-      log.warning("handleDistributeETH, missing member: " + memberIds[i], []);
+  const splitRecipientIds = split.recipients;
+  for (let i: i32 = 0; i < splitRecipientIds.length; i++) {
+    let splitRecipient = SplitRecipient.load(splitRecipientIds[i]);
+    if (!splitRecipient) {
+      log.warning(
+        "handleDistributeETH, missing splitRecipient: " + splitRecipientIds[i],
+        []
+      );
       return;
     }
-    member.totalEthDistributed = member.totalEthDistributed.plus(
-      _scaleAmountByPercentage(amountToSplit, member.allocation)
+    splitRecipient.totalEthDistributed = splitRecipient.totalEthDistributed.plus(
+      _scaleAmountByPercentage(amountToSplit, splitRecipient.allocation)
     );
-    member.save();
+    splitRecipient.save();
   }
 }
