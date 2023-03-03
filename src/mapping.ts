@@ -1,13 +1,19 @@
-import { Address, BigInt, log } from "@graphprotocol/graph-ts";
+import { Address, BigInt, ethereum, log } from "@graphprotocol/graph-ts";
 import {
   CreateSplit,
   CreateSplitCall,
   DistributeETH,
   Withdrawal,
 } from "../generated/SplitMain/SplitMain";
-import { Recipient, SplitRecipient, Split } from "../generated/schema";
+import {
+  Recipient,
+  SplitRecipient,
+  Split,
+  SplitRecipientToken,
+} from "../generated/schema";
 
 const PERCENTAGE_SCALE = 1_000_000;
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
 function genSplitId(proxyAddress: Address): string {
   return proxyAddress.toHex();
@@ -47,8 +53,6 @@ export function handleCreateSplitCall(call: CreateSplitCall): void {
     split = new Split(splitId);
   }
   split.distributorFee = call.inputs.distributorFee;
-  split.totalEthDistributed = BigInt.fromI32(0);
-  split.totalEthClaimed = BigInt.fromI32(0);
 
   let recipients = call.inputs.accounts;
   let allocations = call.inputs.percentAllocations;
@@ -62,7 +66,6 @@ export function handleCreateSplitCall(call: CreateSplitCall): void {
     if (!recipient) {
       recipient = new Recipient(recipientId);
       recipient.splits = [];
-      recipient.totalEthClaimed = BigInt.fromI32(0);
     }
     let recipientSplits = recipient.splits;
     recipientSplits.push(splitRecipientId);
@@ -74,8 +77,7 @@ export function handleCreateSplitCall(call: CreateSplitCall): void {
     splitRecipient.split = splitId;
     splitRecipient.recipient = recipientId;
     splitRecipient.allocation = allocations[i];
-    splitRecipient.totalEthDistributed = BigInt.fromI32(0);
-    splitRecipient.totalEthClaimed = BigInt.fromI32(0);
+    splitRecipient.tokens = [];
     splitRecipient.save();
     splitRecipientIds.push(splitRecipientId);
   }
@@ -94,8 +96,6 @@ export function handleDistributeETH(event: DistributeETH): void {
     return;
   }
   let amountToSplit = event.params.amount;
-  split.totalEthDistributed = split.totalEthDistributed.plus(amountToSplit);
-  split.save();
 
   const distributorFeeAmount = _scaleAmountByPercentage(
     amountToSplit,
@@ -113,9 +113,27 @@ export function handleDistributeETH(event: DistributeETH): void {
       );
       return;
     }
-    splitRecipient.totalEthDistributed = splitRecipient.totalEthDistributed.plus(
+
+    const splitRecipientTokenId = joinIds([splitRecipient.id, ZERO_ADDRESS]);
+    let splitRecipientToken = SplitRecipientToken.load(splitRecipientTokenId);
+    if (!splitRecipientToken) {
+      splitRecipientToken = new SplitRecipientToken(splitRecipientTokenId);
+      splitRecipientToken.token = ZERO_ADDRESS;
+      splitRecipientToken.totalDistributed = BigInt.fromI32(0);
+      splitRecipientToken.totalClaimed = BigInt.fromI32(0);
+    }
+
+    splitRecipientToken.totalDistributed = splitRecipientToken.totalDistributed.plus(
       _scaleAmountByPercentage(amountToSplit, splitRecipient.allocation)
     );
+
+    splitRecipientToken.save();
+
+    // add token to split recipient
+    let tokens = splitRecipient.tokens;
+    tokens.push(splitRecipientTokenId);
+
+    splitRecipient.tokens = tokens;
     splitRecipient.save();
   }
 }
@@ -131,33 +149,32 @@ export function handleWithdrawal(event: Withdrawal): void {
     return;
   }
 
+  let tokens = event.params.tokens.map<string>((address) => address.toHex());
+  let amounts = event.params.tokenAmounts;
+  if (event.params.ethAmount) {
+    tokens.push(ZERO_ADDRESS);
+    amounts.push(event.params.ethAmount);
+  }
+
   const splitRecipientIds = recipient.splits;
   for (let i: i32 = 0; i < splitRecipientIds.length; i++) {
-    let splitRecipient = SplitRecipient.load(splitRecipientIds[i]);
-    if (!splitRecipient) {
-      log.warning(
-        "handleWithdrawal, missing splitRecipient: " + splitRecipientIds[i],
-        []
+    for (let j: i32 = 0; j < tokens.length; j++) {
+      let splitRecipientToken = SplitRecipientToken.load(
+        joinIds([splitRecipientIds[i], tokens[j]])
       );
-      return;
+
+      // if this split has not made a distribution with this token, skip
+      if (!splitRecipientToken) {
+        return;
+      }
+
+      // mark distribution as claimed only if distribution > claimed to reduce db load
+      if (
+        splitRecipientToken.totalDistributed > splitRecipientToken.totalClaimed
+      ) {
+        splitRecipientToken.totalClaimed = splitRecipientToken.totalDistributed;
+        splitRecipientToken.save();
+      }
     }
-    let split = Split.load(splitRecipient.split);
-    if (!split) {
-      log.warning(
-        "handleWithdrawal, missing split: " + splitRecipient.split,
-        []
-      );
-      return;
-    }
-
-    const splitEthClaimed = splitRecipient.totalEthDistributed.minus(
-      splitRecipient.totalEthClaimed
-    );
-
-    splitRecipient.totalEthClaimed = splitRecipient.totalEthDistributed;
-    splitRecipient.save();
-
-    split.totalEthClaimed = split.totalEthClaimed.plus(splitEthClaimed);
-    split.save();
   }
 }

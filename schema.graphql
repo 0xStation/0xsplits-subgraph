@@ -1,8 +1,6 @@
 type Split @entity {
   id: ID!
   distributorFee: BigInt!
-  totalEthDistributed: BigInt!
-  totalEthClaimed: BigInt!
 
   # can't use derived relations inside mapping.ts
   # recipients: [SplitRecipient!]! @derivedFrom(field: "split")
@@ -14,8 +12,8 @@ type SplitRecipient @entity {
   split: Split!
   recipient: Recipient!
   allocation: BigInt!
-  totalEthDistributed: BigInt!
-  totalEthClaimed: BigInt!
+
+  tokens: [SplitRecipientToken!]!
 }
 
 type Recipient @entity {
@@ -24,4 +22,11 @@ type Recipient @entity {
   # can't use derived relations inside mapping.ts
   # splits: [SplitRecipient!]! @derivedFrom(field: "split")
   splits: [SplitRecipient!]!
+}
+
+type SplitRecipientToken @entity {
+  id: ID! # {splitAddress}:{recipientAddress}:{tokenAddress}
+  token: String! # zero address for ETH
+  totalDistributed: BigInt!
+  totalClaimed: BigInt!
 }
