@@ -23,6 +23,8 @@ dataSources:
           handler: handleCreateSplit
         - event: DistributeETH(indexed address,uint256,indexed address)
           handler: handleDistributeETH
+        - event: DistributeERC20(indexed address,indexed address,uint256,indexed address)
+          handler: handleDistributeERC20
         - event: Withdrawal(indexed address,uint256,address[],uint256[])
           handler: handleWithdrawal
       callHandlers:

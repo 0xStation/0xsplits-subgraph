@@ -2,6 +2,7 @@ import { Address, BigInt, ethereum, log } from "@graphprotocol/graph-ts";
 import {
   CreateSplit,
   CreateSplitCall,
+  DistributeERC20,
   DistributeETH,
   Withdrawal,
 } from "../generated/SplitMain/SplitMain";
@@ -14,10 +15,6 @@ import {
 
 const PERCENTAGE_SCALE = 1_000_000;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
-
-function genSplitId(proxyAddress: Address): string {
-  return proxyAddress.toHex();
-}
 
 function joinIds(ids: string[]): string {
   return ids.join(":");
@@ -34,7 +31,7 @@ function _scaleAmountByPercentage(
 
 export function handleCreateSplit(event: CreateSplit): void {
   log.warning("handleCreateSplit", []);
-  const splitId = genSplitId(event.params.split);
+  const splitId = event.params.split.toHex();
   let split = Split.load(splitId);
   if (!split) {
     log.warning("handleCreateSplit: split does not yet exist", []);
@@ -46,7 +43,7 @@ export function handleCreateSplit(event: CreateSplit): void {
 
 export function handleCreateSplitCall(call: CreateSplitCall): void {
   log.warning("handleCreateSplitCall", []);
-  const splitId = genSplitId(call.outputs.split);
+  const splitId = call.outputs.split.toHex();
   let split = Split.load(splitId);
   if (!split) {
     log.warning("handleCreateSplitCall: split does not yet exist", []);
@@ -87,15 +84,34 @@ export function handleCreateSplitCall(call: CreateSplitCall): void {
 }
 
 export function handleDistributeETH(event: DistributeETH): void {
-  let split = Split.load(genSplitId(event.params.split));
+  handleDistribution(
+    event.params.split.toHex(),
+    event.params.amount,
+    ZERO_ADDRESS
+  );
+}
+
+export function handleDistributeERC20(event: DistributeERC20): void {
+  handleDistribution(
+    event.params.split.toHex(),
+    event.params.amount,
+    event.params.token.toHex()
+  );
+}
+
+// using DistributeETH event type for its shared parameters with DistributeERC20
+// take token argument directly from event handlers (zero address for ETH)
+function handleDistribution(
+  splitAddress: string,
+  amount: BigInt,
+  token: string
+): void {
+  let split = Split.load(splitAddress);
   if (!split) {
-    log.warning(
-      "handleDistributeETH, no split found: " + genSplitId(event.params.split),
-      []
-    );
+    log.warning("handleDistributeETH, no split found: " + splitAddress, []);
     return;
   }
-  let amountToSplit = event.params.amount;
+  let amountToSplit = amount;
 
   const distributorFeeAmount = _scaleAmountByPercentage(
     amountToSplit,
@@ -114,11 +130,11 @@ export function handleDistributeETH(event: DistributeETH): void {
       return;
     }
 
-    const splitRecipientTokenId = joinIds([splitRecipient.id, ZERO_ADDRESS]);
+    const splitRecipientTokenId = joinIds([splitRecipient.id, token]);
     let splitRecipientToken = SplitRecipientToken.load(splitRecipientTokenId);
     if (!splitRecipientToken) {
       splitRecipientToken = new SplitRecipientToken(splitRecipientTokenId);
-      splitRecipientToken.token = ZERO_ADDRESS;
+      splitRecipientToken.token = token;
       splitRecipientToken.totalDistributed = BigInt.fromI32(0);
       splitRecipientToken.totalClaimed = BigInt.fromI32(0);
     }
@@ -130,6 +146,7 @@ export function handleDistributeETH(event: DistributeETH): void {
     splitRecipientToken.save();
 
     // add token to split recipient
+    // .push() may seem like we'll have duplicate ids but, The Graph automatically keeps this list unique for us it seems!
     let tokens = splitRecipient.tokens;
     tokens.push(splitRecipientTokenId);
 
@@ -140,7 +157,6 @@ export function handleDistributeETH(event: DistributeETH): void {
 
 // TODO: add split-withdraw events table for history tab
 // TODO: handle split updates
-// TODO: handle ERC20s
 export function handleWithdrawal(event: Withdrawal): void {
   const recipientId = event.params.account.toHex();
   let recipient = Recipient.load(recipientId);
@@ -150,10 +166,8 @@ export function handleWithdrawal(event: Withdrawal): void {
   }
 
   let tokens = event.params.tokens.map<string>((address) => address.toHex());
-  let amounts = event.params.tokenAmounts;
   if (event.params.ethAmount) {
     tokens.push(ZERO_ADDRESS);
-    amounts.push(event.params.ethAmount);
   }
 
   const splitRecipientIds = recipient.splits;
