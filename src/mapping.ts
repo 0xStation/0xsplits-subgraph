@@ -30,11 +30,9 @@ function _scaleAmountByPercentage(
 }
 
 export function handleCreateSplit(event: CreateSplit): void {
-  log.warning("handleCreateSplit", []);
   const splitId = event.params.split.toHex();
   let split = Split.load(splitId);
   if (!split) {
-    log.warning("handleCreateSplit: split does not yet exist", []);
     split = new Split(splitId);
     split.recipients = [];
     split.save();
@@ -42,11 +40,9 @@ export function handleCreateSplit(event: CreateSplit): void {
 }
 
 export function handleCreateSplitCall(call: CreateSplitCall): void {
-  log.warning("handleCreateSplitCall", []);
   const splitId = call.outputs.split.toHex();
   let split = Split.load(splitId);
   if (!split) {
-    log.warning("handleCreateSplitCall: split does not yet exist", []);
     split = new Split(splitId);
   }
   split.distributorFee = call.inputs.distributorFee;
@@ -98,8 +94,7 @@ export function handleDistributeERC20(event: DistributeERC20): void {
   );
 }
 
-// using DistributeETH event type for its shared parameters with DistributeERC20
-// take token argument directly from event handlers (zero address for ETH)
+// shared helper for DistributeETH and DistributeERC20
 function handleDistribution(
   splitAddress: string,
   amount: BigInt,
@@ -157,30 +152,25 @@ export function handleWithdrawal(event: Withdrawal): void {
     return;
   }
 
-  let tokens = event.params.tokens.map<string>((address) => address.toHex());
-  if (event.params.ethAmount) {
+  let tokens =
+    event.params.tokens.map<string>((address) => address.toHex()) || [];
+  if (event.params.ethAmount.gt(BigInt.fromI32(0))) {
     tokens.push(ZERO_ADDRESS);
   }
 
   const splitRecipientIds = recipient.splits;
   for (let i: i32 = 0; i < splitRecipientIds.length; i++) {
     for (let j: i32 = 0; j < tokens.length; j++) {
-      let splitRecipientToken = SplitRecipientToken.load(
-        joinIds([splitRecipientIds[i], tokens[j]])
-      );
+      const splitRecipientTokenId = joinIds([splitRecipientIds[i], tokens[j]]);
+      let splitRecipientToken = SplitRecipientToken.load(splitRecipientTokenId);
 
       // if this split has not made a distribution with this token, skip
       if (!splitRecipientToken) {
         return;
       }
 
-      // mark distribution as claimed only if distribution > claimed to reduce db load
-      if (
-        splitRecipientToken.totalDistributed > splitRecipientToken.totalClaimed
-      ) {
-        splitRecipientToken.totalClaimed = splitRecipientToken.totalDistributed;
-        splitRecipientToken.save();
-      }
+      splitRecipientToken.totalClaimed = splitRecipientToken.totalDistributed;
+      splitRecipientToken.save();
     }
   }
 }

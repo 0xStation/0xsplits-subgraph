@@ -8,7 +8,7 @@ dataSources:
     source:
       address: "0x2ed6c4B5dA6378c7897AC67Ba9e43102Feb694EE"
       abi: SplitMain
-      startBlock: 6374540
+      startBlock: 8592016 # 6374540
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.7
