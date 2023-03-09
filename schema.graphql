@@ -2,6 +2,7 @@ type Split @entity {
   id: ID! # address
   distributorFee: BigInt!
   recipients: [SplitRecipient!]! # explicit storage because derived relations cannot be used inside mapping.ts
+  withdrawEvents: [SplitRecipientWithdrawEvent!]! @derivedFrom(field: "split")
 }
 
 type Recipient @entity {
@@ -22,7 +23,17 @@ type SplitRecipient @entity {
 type SplitRecipientToken @entity {
   id: ID! # {splitAddress}:{recipientAddress}:{tokenAddress}
   splitRecipient: SplitRecipient!
-  token: String! # zero address for ETH
+  tokenAddress: String! # zero address for ETH
   totalDistributed: BigInt!
   totalClaimed: BigInt!
+}
+
+type SplitRecipientWithdrawEvent @entity {
+  id: ID! # {prefix}:{txHash}:{logIndex}:{accountAddress}
+  split: Split!
+  recipient: Recipient!
+  tokenAddress: String! # zero address for ETH
+  value: BigInt! # uint256
+  timestamp: BigInt! # unix timestamp
+  transactionHash: String!
 }

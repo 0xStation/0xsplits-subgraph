@@ -11,13 +11,20 @@ import {
   SplitRecipient,
   Split,
   SplitRecipientToken,
+  SplitRecipientWithdrawEvent,
 } from "../generated/schema";
 
 const PERCENTAGE_SCALE = 1_000_000;
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const WITHDRAWAL_EVENT_PREFIX = "we";
+const ID_SEPARATOR = ":";
 
 function joinIds(ids: string[]): string {
-  return ids.join(":");
+  return ids.join(ID_SEPARATOR);
+}
+
+function expandId(id: string): string[] {
+  return id.split(ID_SEPARATOR);
 }
 
 // reimplementation of internal function within SplitMain
@@ -98,7 +105,7 @@ export function handleDistributeERC20(event: DistributeERC20): void {
 function handleDistribution(
   splitAddress: string,
   amount: BigInt,
-  token: string
+  tokenAddress: string
 ): void {
   let split = Split.load(splitAddress);
   if (!split) {
@@ -124,12 +131,12 @@ function handleDistribution(
       return;
     }
 
-    const splitRecipientTokenId = joinIds([splitRecipient.id, token]);
+    const splitRecipientTokenId = joinIds([splitRecipient.id, tokenAddress]);
     let splitRecipientToken = SplitRecipientToken.load(splitRecipientTokenId);
     if (!splitRecipientToken) {
       splitRecipientToken = new SplitRecipientToken(splitRecipientTokenId);
       splitRecipientToken.splitRecipient = splitRecipient.id;
-      splitRecipientToken.token = token;
+      splitRecipientToken.tokenAddress = tokenAddress;
       splitRecipientToken.totalDistributed = BigInt.fromI32(0);
       splitRecipientToken.totalClaimed = BigInt.fromI32(0);
     }
@@ -166,11 +173,45 @@ export function handleWithdrawal(event: Withdrawal): void {
 
       // if this split has not made a distribution with this token, skip
       if (!splitRecipientToken) {
-        return;
+        continue;
       }
 
-      splitRecipientToken.totalClaimed = splitRecipientToken.totalDistributed;
+      const lastDistributed = splitRecipientToken.totalDistributed;
+      const lastClaimed = splitRecipientToken.totalClaimed;
+      const valueWithdrawn = lastDistributed.minus(lastClaimed);
+
+      // if this split is not responsible for any distribution, skip
+      // prevents adding event to history in case of no value withdrawn
+      // also reduces load to reduce risk of not saving event entries
+      if (valueWithdrawn.equals(BigInt.fromI32(0))) {
+        continue;
+      }
+
+      splitRecipientToken.totalClaimed = lastDistributed;
       splitRecipientToken.save();
+
+      // save withdraw event for history view
+
+      let txHash = event.transaction.hash.toHexString();
+      let logIdx = event.logIndex.toString();
+      let withdrawalEventId = joinIds([
+        WITHDRAWAL_EVENT_PREFIX,
+        txHash,
+        logIdx,
+        recipientId,
+      ]);
+
+      const expandedId = expandId(splitRecipientIds[i]);
+      const splitId = expandedId[0];
+
+      let withdrawEvent = new SplitRecipientWithdrawEvent(withdrawalEventId);
+      withdrawEvent.split = splitId;
+      withdrawEvent.recipient = recipientId;
+      withdrawEvent.tokenAddress = tokens[j];
+      withdrawEvent.value = valueWithdrawn;
+      withdrawEvent.timestamp = event.block.timestamp;
+      withdrawEvent.transactionHash = txHash;
+      withdrawEvent.save();
     }
   }
 }
